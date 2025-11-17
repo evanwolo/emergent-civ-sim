@@ -133,32 +133,6 @@ void Kernel::buildSmallWorld() {
     }
 }
 
-double Kernel::languageQuality(const Agent& i, const Agent& j) const {
-    if (i.primaryLang == j.primaryLang) {
-        return std::min(i.fluency, j.fluency);
-    } else {
-        // Cross-lingual influence attenuates
-        return 0.25 * std::min(i.fluency, j.fluency);
-    }
-}
-
-double Kernel::similarityGate(const Agent& i, const Agent& j) const {
-    // Cosine similarity in belief space
-    double dot = 0.0, ni = 0.0, nj = 0.0;
-    for (int k = 0; k < 4; ++k) {
-        dot += i.B[k] * j.B[k];
-        ni += i.B[k] * i.B[k];
-        nj += j.B[k] * j.B[k];
-    }
-    
-    double sim = 0.0;
-    if (ni > 0 && nj > 0) {
-        sim = dot / (std::sqrt(ni) * std::sqrt(nj));  // -1..1
-    }
-    sim = 0.5 * (sim + 1.0);  // normalize to 0..1
-    return std::max(sim, cfg_.simFloor);
-}
-
 void Kernel::updateBeliefs() {
     // Compute deltas in parallel-friendly way
     std::vector<std::array<double, 4>> dx(agents_.size());
@@ -227,15 +201,19 @@ Kernel::Metrics Kernel::computeMetrics() const {
     for (std::uint32_t r = 0; r < cfg_.regions; ++r) {
         std::array<double, 4> c{0, 0, 0, 0};
         for (auto id : regionIndex_[r]) {
-            for (int k = 0; k < 4; ++k) {
-                c[k] += agents_[id].B[k];
-            }
+            const auto& B = agents_[id].B;
+            c[0] += B[0];
+            c[1] += B[1];
+            c[2] += B[2];
+            c[3] += B[3];
         }
         int n = static_cast<int>(regionIndex_[r].size());
         if (n > 0) {
-            for (int k = 0; k < 4; ++k) {
-                c[k] /= n;
-            }
+            const double inv_n = 1.0 / n;
+            c[0] *= inv_n;
+            c[1] *= inv_n;
+            c[2] *= inv_n;
+            c[3] *= inv_n;
         }
         centroids[r] = c;
         counts[r] = n;
@@ -243,26 +221,29 @@ Kernel::Metrics Kernel::computeMetrics() const {
     
     // Pairwise distances between centroids
     std::vector<double> dists;
+    dists.reserve((cfg_.regions * (cfg_.regions - 1)) / 2);  // Upper bound
     for (std::uint32_t i = 0; i < cfg_.regions; ++i) {
         if (counts[i] == 0) continue;
         for (std::uint32_t j = i + 1; j < cfg_.regions; ++j) {
             if (counts[j] == 0) continue;
-            double d = 0.0;
-            for (int k = 0; k < 4; ++k) {
-                double dd = centroids[i][k] - centroids[j][k];
-                d += dd * dd;
-            }
-            dists.push_back(std::sqrt(d));
+            // Unroll 4D distance calculation
+            const double d0 = centroids[i][0] - centroids[j][0];
+            const double d1 = centroids[i][1] - centroids[j][1];
+            const double d2 = centroids[i][2] - centroids[j][2];
+            const double d3 = centroids[i][3] - centroids[j][3];
+            dists.push_back(std::sqrt(d0*d0 + d1*d1 + d2*d2 + d3*d3));
         }
     }
     
     if (!dists.empty()) {
-        m.polarizationMean = std::accumulate(dists.begin(), dists.end(), 0.0) / dists.size();
+        const double n = static_cast<double>(dists.size());
+        m.polarizationMean = std::accumulate(dists.begin(), dists.end(), 0.0) / n;
         double sq = 0.0;
         for (double v : dists) {
-            sq += (v - m.polarizationMean) * (v - m.polarizationMean);
+            const double diff = v - m.polarizationMean;
+            sq += diff * diff;
         }
-        m.polarizationStd = std::sqrt(sq / dists.size());
+        m.polarizationStd = std::sqrt(sq / n);
     }
     
     // Average traits

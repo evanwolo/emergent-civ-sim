@@ -88,9 +88,33 @@ private:
     void buildSmallWorld();
     void updateBeliefs();
     
-    // Helper functions
-    double languageQuality(const Agent& i, const Agent& j) const;
-    double similarityGate(const Agent& i, const Agent& j) const;
+    // Helper functions (inline for performance)
+    inline double languageQuality(const Agent& i, const Agent& j) const {
+        if (i.primaryLang == j.primaryLang) {
+            return std::min(i.fluency, j.fluency);
+        } else {
+            // Cross-lingual influence attenuates
+            return 0.25 * std::min(i.fluency, j.fluency);
+        }
+    }
+    
+    inline double similarityGate(const Agent& i, const Agent& j) const {
+        // Cosine similarity in belief space - optimized with loop unrolling
+        const double dot = i.B[0] * j.B[0] + i.B[1] * j.B[1] + 
+                           i.B[2] * j.B[2] + i.B[3] * j.B[3];
+        const double ni = i.B[0] * i.B[0] + i.B[1] * i.B[1] + 
+                          i.B[2] * i.B[2] + i.B[3] * i.B[3];
+        const double nj = j.B[0] * j.B[0] + j.B[1] * j.B[1] + 
+                          j.B[2] * j.B[2] + j.B[3] * j.B[3];
+        
+        double sim = 0.0;
+        if (ni > 0.0 && nj > 0.0) {
+            // Use single sqrt for product to reduce sqrt calls
+            sim = dot / std::sqrt(ni * nj);  // -1..1
+        }
+        sim = 0.5 * (sim + 1.0);  // normalize to 0..1
+        return std::max(sim, cfg_.simFloor);
+    }
     
     // Fast tanh approximation for performance (accurate in [-3, 3])
     inline double fastTanh(double x) const {
