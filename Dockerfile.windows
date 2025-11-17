@@ -1,0 +1,47 @@
+# Dockerfile for Windows containers (experimental)
+# escape=`
+
+FROM mcr.microsoft.com/windows/servercore:ltsc2022 AS builder
+
+# Install Chocolatey
+RUN powershell -Command `
+    Set-ExecutionPolicy Bypass -Scope Process -Force; `
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; `
+    iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+
+# Install build tools
+RUN choco install -y cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+RUN choco install -y visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+
+WORKDIR C:\app
+
+# Copy source files
+COPY include\ .\include\
+COPY src\ .\src\
+COPY CMakeLists.txt .\
+
+# Build
+RUN powershell -Command `
+    mkdir build; `
+    cd build; `
+    cmake .. -G 'Visual Studio 17 2022'; `
+    cmake --build . --config Release
+
+# Runtime image
+FROM mcr.microsoft.com/windows/nanoserver:ltsc2022
+
+WORKDIR C:\app
+
+# Copy executables
+COPY --from=builder C:\app\build\Release\KernelSim.exe .
+COPY --from=builder C:\app\build\Release\OpinionSim.exe .
+
+# Create data directory
+RUN mkdir C:\app\data
+
+VOLUME ["C:\\app\\data"]
+
+ENTRYPOINT ["C:\\app\\KernelSim.exe"]
+
+LABEL org.opencontainers.image.title="Grand Strategy Simulation Engine (Windows)"
+LABEL org.opencontainers.image.version="0.2.0"
