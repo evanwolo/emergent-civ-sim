@@ -5,6 +5,15 @@
 #include <cmath>
 #include <random>
 
+// Thread-local RNG for parallel operations (prevents race conditions)
+namespace {
+    thread_local std::mt19937_64 tl_rng{std::random_device{}()};
+    
+    std::mt19937_64& getThreadLocalRNG() {
+        return tl_rng;
+    }
+}
+
 // Subsistence requirements per capita (basic needs) - reduced for early game bootstrap
 constexpr double FOOD_SUBSISTENCE = 0.7;      // Was 1.0, reduced for bootstrap
 constexpr double ENERGY_SUBSISTENCE = 0.35;   // Was 0.5, reduced for bootstrap  
@@ -407,12 +416,28 @@ void Economy::distributeIncome(const std::vector<Agent>& agents) {
     // Use actual agent.region values instead of sequential assignment
     for (std::size_t i = 0; i < agents_.size(); ++i) {
         std::uint32_t region_id = agents[i].region;
+        
+        // Validate agent-region mapping
+        if (region_id >= regions_.size()) {
+            throw std::runtime_error("Invalid agent.region in distributeIncome: " + 
+                                   std::to_string(region_id) + 
+                                   " (must be < " + std::to_string(regions_.size()) + ")");
+        }
+        
         region_total_productivity[region_id] += agents_[i].productivity;
     }
     
     // Second pass: distribute regional income to agents
     for (std::size_t i = 0; i < agents_.size(); ++i) {
         std::uint32_t region_id = agents[i].region;
+        
+        // Validate agent-region mapping
+        if (region_id >= regions_.size()) {
+            throw std::runtime_error("Invalid agent.region in distributeIncome (second pass): " + 
+                                   std::to_string(region_id) + 
+                                   " (must be < " + std::to_string(regions_.size()) + ")");
+        }
+        
         auto& region = regions_[region_id];
         auto& agent = agents_[i];
         
@@ -599,14 +624,21 @@ double Economy::computeRegionGini(std::uint32_t region_id, const std::vector<Age
     // Compute Gini coefficient for wealth distribution in a region using O(N log N) algorithm
     // Gini = 0 (perfect equality) to 1 (total inequality)
     
+    // Validate region_id
+    if (region_id >= regions_.size()) {
+        throw std::runtime_error("Invalid region_id in computeRegionGini: " + 
+                               std::to_string(region_id) + 
+                               " (must be < " + std::to_string(regions_.size()) + ")");
+    }
+    
     if (agents_.empty()) return 0.0;
     
-    // Collect agent wealths in this region
+    // Collect agent wealths in this region using actual agent.region values
     std::vector<double> wealths;
-    for (const auto& agent_econ : agents_) {
-        // Note: We need to cross-reference with actual agent.region from agents vector
-        // For now, we'll compute across all agents since we're fixing the mapping bug
-        wealths.push_back(agent_econ.wealth);
+    for (std::size_t i = 0; i < agents.size(); ++i) {
+        if (agents[i].region == region_id) {
+            wealths.push_back(agents_[i].wealth);
+        }
     }
     
     if (wealths.size() < 2) return 0.0;

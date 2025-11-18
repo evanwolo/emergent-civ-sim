@@ -159,10 +159,23 @@ void MovementModule::updateMembership(Movement& mov, const Kernel& kernel) {
     mov.classComposition.clear();
     const auto& economy = kernel.economy();
     const auto& ecoAgents = economy.agents();
+    
+    // Collect all agent wealths for proper decile calculation
+    std::vector<double> all_wealths;
+    all_wealths.reserve(ecoAgents.size());
+    for (const auto& ae : ecoAgents) {
+        all_wealths.push_back(ae.wealth);
+    }
+    std::sort(all_wealths.begin(), all_wealths.end());
+    
+    // Calculate deciles for movement members based on global wealth distribution
     for (auto agentId : mov.members) {
         if (agentId < ecoAgents.size()) {
             double wealth = ecoAgents[agentId].wealth;
-            int decile = std::min(9, static_cast<int>(wealth / 10.0));  // Simple decile
+            // Find position in sorted wealth distribution
+            auto it = std::lower_bound(all_wealths.begin(), all_wealths.end(), wealth);
+            int decile = std::distance(all_wealths.begin(), it) * 10 / all_wealths.size();
+            decile = std::min(9, decile);  // cap at 9
             mov.classComposition[decile]++;
         }
     }

@@ -10,6 +10,7 @@
 #include "modules/Psychology.h"
 #include "modules/Health.h"
 #include "modules/Movement.h"
+#include "utils/EventLog.h"
 
 // ---------- Configuration ----------
 struct KernelConfig {
@@ -95,6 +96,10 @@ public:
     const MovementModule& movements() const { return movements_; }
     MovementModule& movementsMut() { return movements_; }
     
+    // Event log access
+    EventLog& eventLog() { return event_log_; }
+    const EventLog& eventLog() const { return event_log_; }
+    
     // Metrics (lightweight for logging)
     struct Metrics {
         double polarizationMean = 0.0;
@@ -131,6 +136,7 @@ private:
     PsychologyModule psychology_;
     HealthModule health_;
     MovementModule movements_;  // Movement module
+    EventLog event_log_;  // Event tracking system
 
     // Helper functions
     inline double fastTanh(double x) const {

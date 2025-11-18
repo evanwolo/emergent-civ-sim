@@ -6,6 +6,25 @@
 #include <omp.h>
 
 Kernel::Kernel(const KernelConfig& cfg) : cfg_(cfg), rng_(cfg.seed) {
+    // Validate demographic parameters
+    if (cfg.demographyEnabled) {
+        if (cfg.ticksPerYear <= 0) {
+            throw std::invalid_argument("ticksPerYear must be > 0 (got " + 
+                                      std::to_string(cfg.ticksPerYear) + ")");
+        }
+        if (cfg.maxAgeYears <= 0) {
+            throw std::invalid_argument("maxAgeYears must be > 0 (got " + 
+                                      std::to_string(cfg.maxAgeYears) + ")");
+        }
+        if (cfg.regionCapacity <= 0) {
+            throw std::invalid_argument("regionCapacity must be > 0 (got " + 
+                                      std::to_string(cfg.regionCapacity) + ")");
+        }
+        
+        // Validate mortality/fertility curve ranges would be checked at runtime
+        // (curves are computed algorithmically, so bounds are implicit)
+    }
+    
     reset(cfg);
 }
 
@@ -461,6 +480,9 @@ void Kernel::stepDemography() {
         d = std::bernoulli_distribution(pDeath);
         if (d(rng_)) {
             agent.alive = false;
+            
+            // Log death event
+            event_log_.logDeath(generation_, agent.id, agent.region, agent.age);
             continue;
         }
         
@@ -598,6 +620,9 @@ void Kernel::createChild(std::uint32_t motherId) {
     // Add to containers
     agents_.push_back(child);
     regionIndex_[child.region].push_back(child.id);
+    
+    // Log birth event
+    event_log_.logBirth(generation_, child.id, child.region, motherId);
 }
 
 void Kernel::compactDeadAgents() {

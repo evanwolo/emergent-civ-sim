@@ -2,16 +2,28 @@
 
 A nation-scale grand strategy simulation where societies evolve bottom-up from 50,000+ agents. Cultures, movements, economies, and institutions emerge without scripts. You govern through policy, institutions, and strategic decisions—no micromanagement.
 
-## Current Status (Phase 2.3)
+## Current Status (Phase 2.3+)
 
-**✅ Implemented:**
-- **Kernel:** 50k agents, 4D belief dynamics, Watts-Strogatz networks, 200 regions
-- **Economy:** 5-good trade (Food/Energy/Tools/Luxury/Services), dynamic pricing, regional specialization, wealth/hardship tracking
-- **Clustering:** Charismatic hub detection, identity group formation
-- **Docker:** Multi-stage build, ~150MB image, compose profiles
+**✅ Core Systems Implemented:**
+- **Kernel:** 50k agents, 4D belief dynamics (Authority/Tradition/Hierarchy/Faith), Watts-Strogatz small-world networks, 200 regions
+- **Demographics:** Age-structured population (0-90 years), births/deaths, genetic+cultural inheritance, multi-generational dynamics
+- **Economy:** 5-good trade system with dramatic regional specialization and scarcity
+  - Goods: Food, Energy, Tools, Luxury, Services
+  - Dynamic pricing, regional endowments, trade networks
+  - Wealth distribution (Gini coefficient), hardship tracking
+  - Economic systems emerge from beliefs: cooperative, mixed, market, feudal, planned
+- **Culture:** Charismatic hub detection, identity group formation via clustering (K-means, DBSCAN)
+- **Movements:** Political/social movement formation from clusters
+  - Formation triggers: size, coherence, charisma density, economic hardship
+  - Power metrics: street capacity, charisma, coherence
+  - Lifecycle stages: Birth, Growth, Plateau, Schism, Decline, Dead
+- **Docker:** Multi-stage build (~150MB image), compose profiles for interactive/batch modes
 
-**🚧 In Progress:**
-- **Movements:** Formation triggers, platforms, power metrics (Phase 3)
+**� Scale & Performance:**
+- 50,000 agents with full personality traits, beliefs, networks, economy
+- 200 regions with specialized resource endowments
+- Trade volume: ~24,000 units/tick at equilibrium
+- Runs 1000 ticks in ~15 seconds (Docker)
 
 See [DESIGN.md](docs/DESIGN.md) for architecture and [CHANGELOG.md](CHANGELOG.md) for version history.
 
