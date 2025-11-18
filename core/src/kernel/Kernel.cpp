@@ -148,7 +148,7 @@ void Kernel::updateBeliefs() {
     const std::size_t n = agents_.size();
     const double stepSize = cfg_.stepSize;
     
-    #pragma omp parallel for schedule(dynamic)
+    #pragma omp parallel for schedule(guided)
     for (std::size_t i = 0; i < n; ++i) {
         const auto& ai = agents_[i];
         std::array<double, 4> acc{0, 0, 0, 0};
@@ -193,7 +193,7 @@ void Kernel::updateBeliefs() {
     }
     
     // Apply updates
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (std::size_t i = 0; i < n; ++i) {
         agents_[i].x[0] += dx[i][0];
         agents_[i].x[1] += dx[i][1];
