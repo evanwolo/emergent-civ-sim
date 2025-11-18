@@ -1,0 +1,4 @@
+run 1000 100
+metrics
+economy
+quit

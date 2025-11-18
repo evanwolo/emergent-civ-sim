@@ -87,26 +87,50 @@ static void printClusters(const std::vector<Cluster>& clusters, const Kernel& ke
 
 static std::vector<Cluster> g_lastClusters;
 
-int main() {
+int main(int argc, char** argv) {
     KernelConfig cfg;
     cfg.population = 50000;
     cfg.regions = 200;
     cfg.avgConnections = 8;
     cfg.rewireProb = 0.05;
     cfg.stepSize = 0.15;
+    cfg.demographyEnabled = true;  // Re-enable for debugging
     
     Kernel kernel(cfg);
     
-    std::ios::sync_with_stdio(false);
-    std::cin.tie(nullptr);
+    // Check if there's a script file argument
+    std::istream* input = &std::cin;
+    std::ifstream scriptFile;
     
-    printHelp();
+    if (argc > 1) {
+        // Run from script file
+        scriptFile.open(argv[1]);
+        if (!scriptFile.is_open()) {
+            std::cerr << "Error: Could not open script file '" << argv[1] << "'\n";
+            return 1;
+        }
+        input = &scriptFile;
+        std::cerr << "Running commands from script file: " << argv[1] << "\n";
+    } else {
+        // Interactive mode
+        std::ios::sync_with_stdio(false);
+        std::cin.tie(nullptr);
+        printHelp();
+    }
     
     std::string line;
-    while (std::getline(std::cin, line)) {
+    int lineCount = 0;
+    while (std::getline(*input, line)) {
+        lineCount++;
+        std::cerr << "[DEBUG] Line " << lineCount << ": '" << line << "'\n";
+        
         std::istringstream iss(line);
         std::string cmd;
-        if (!(iss >> cmd)) continue;
+        if (!(iss >> cmd)) {
+            std::cerr << "[DEBUG] Empty line, skipping\n";
+            continue;
+        }
+        std::cerr << "[DEBUG] Command: '" << cmd << "'\n";
         
         if (cmd == "step") {
             int n = 1;
@@ -203,8 +227,16 @@ int main() {
                     std::cerr << "Tick " << (t + 1) << "/" << ticks << "\r";
                     std::cerr.flush();
                 }
-                if (t % log_freq == 0) {
+                if (t % log_freq == 0 || t == ticks - 1) {
                     auto m = kernel.computeMetrics();
+                    
+                    // Count alive agents
+                    std::uint32_t alive_count = 0;
+                    for (const auto& agent : kernel.agents()) {
+                        if (agent.alive) alive_count++;
+                    }
+                    
+                    // Write to CSV
                     metricsFile << kernel.generation() << ","
                                 << m.globalWelfare << ","
                                 << m.globalInequality << ","
@@ -213,6 +245,17 @@ int main() {
                                 << m.polarizationStd << ","
                                 << m.avgOpenness << ","
                                 << m.avgConformity << "\n";
+                    
+                    // Print tick summary to stdout
+                    std::cout << "Tick " << (t + 1) << ": "
+                              << "Pop=" << alive_count << ", "
+                              << "Pol=" << std::fixed << std::setprecision(3) << m.polarizationMean << ", "
+                              << "Welfare=" << m.globalWelfare << ", "
+                              << "Ineq=" << m.globalInequality << ", "
+                              << "Hard=" << m.globalHardship << ", "
+                              << "Trade=" << static_cast<int>(kernel.economy().getTotalTrade())
+                              << "\n";
+                    std::cout.flush();
                 }
             }
             

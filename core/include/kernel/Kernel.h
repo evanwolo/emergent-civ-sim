@@ -120,12 +120,16 @@ private:
     
     // Demography
     void stepDemography();
+    void stepMigration();  // Migration decisions
     void createChild(std::uint32_t motherId);
     void compactDeadAgents();
     double mortalityRate(int age) const;
     double mortalityPerTick(int age) const;
+    double mortalityPerTick(int age, std::uint32_t region_id) const;  // Region-specific mortality
     double fertilityRateAnnual(int age) const;
     double fertilityPerTick(int age) const;
+    double fertilityPerTick(int age, std::uint32_t region_id, const Agent& agent,
+                           const std::array<double, 4>& region_beliefs) const;  // Region and agent-specific fertility
 
     KernelConfig cfg_;
     std::vector<Agent> agents_;

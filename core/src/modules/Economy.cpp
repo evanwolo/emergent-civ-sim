@@ -679,6 +679,24 @@ const AgentEconomy& Economy::getAgentEconomy(std::uint32_t agent_id) const {
     return agents_[agent_id];
 }
 
+void Economy::addAgent(std::uint32_t agent_id, std::uint32_t region_id, std::mt19937_64& rng) {
+    // Ensure the agents_ vector is large enough
+    if (agent_id >= agents_.size()) {
+        agents_.resize(agent_id + 1);
+    }
+    
+    // Initialize new agent's economy
+    std::uniform_real_distribution<double> wealth_dist(0.5, 1.5);
+    std::uniform_int_distribution<int> sector_dist(0, kGoodTypes - 1);
+    
+    AgentEconomy& agent = agents_[agent_id];
+    agent.wealth = wealth_dist(rng);
+    agent.income = 1.0;
+    agent.productivity = 1.0;
+    agent.sector = sector_dist(rng);
+    agent.hardship = 0.0;
+}
+
 double Economy::globalWelfare() const {
     if (regions_.empty()) return 1.0;
     

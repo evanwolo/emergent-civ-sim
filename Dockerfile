@@ -47,6 +47,5 @@ RUN useradd -m -u 1000 simuser && \
 
 USER simuser
 
-# Set entrypoint
-ENTRYPOINT ["/app/KernelSim"]
-
+# Default command (can be overridden)
+CMD ["/app/KernelSim"]

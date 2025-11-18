@@ -236,6 +236,11 @@ void Kernel::step() {
     // Demographic step (if enabled)
     if (cfg_.demographyEnabled) {
         stepDemography();
+        
+        // Migration step (every 10 ticks to reduce overhead)
+        if (generation_ % 10 == 0) {
+            stepMigration();
+        }
     }
     
     // Update economy every 10 ticks (reduce overhead)
@@ -423,7 +428,7 @@ Kernel::Metrics Kernel::computeMetrics() const {
 // ============================================================================
 
 double Kernel::mortalityRate(int age) const {
-    // Age-specific mortality (annual probability)
+    // Base age-specific mortality (annual probability)
     if (age < 5)   return 0.01;   // 1% child mortality
     if (age < 15)  return 0.001;  // 0.1% youth
     if (age < 50)  return 0.002;  // 0.2% adult
@@ -438,8 +443,28 @@ double Kernel::mortalityPerTick(int age) const {
     return 1.0 - std::pow(1.0 - annual, 1.0 / cfg_.ticksPerYear);
 }
 
+// Region-specific mortality rate (modulated by development and welfare)
+double Kernel::mortalityPerTick(int age, std::uint32_t region_id) const {
+    double base_annual = mortalityRate(age);
+    
+    // Regional modulation
+    const auto& regional_econ = economy_.getRegion(region_id);
+    double development_factor = 1.0 / (1.0 + regional_econ.development * 0.15);  // Better development → lower mortality
+    double welfare_factor = 1.0 / std::max(0.5, regional_econ.welfare);  // Better welfare → lower mortality
+    
+    // Child mortality especially sensitive to development
+    if (age < 5) {
+        development_factor = 1.0 / (1.0 + regional_econ.development * 0.3);
+    }
+    
+    double adjusted_annual = base_annual * development_factor * welfare_factor;
+    adjusted_annual = std::clamp(adjusted_annual, 0.0001, 0.5);  // Keep reasonable bounds
+    
+    return 1.0 - std::pow(1.0 - adjusted_annual, 1.0 / cfg_.ticksPerYear);
+}
+
 double Kernel::fertilityRateAnnual(int age) const {
-    // Age-specific fertility for females (annual probability)
+    // Base age-specific fertility for females (annual probability)
     if (age < 15)  return 0.0;
     if (age < 20)  return 0.05;   // 5% for teens
     if (age < 30)  return 0.12;   // 12% peak fertility
@@ -454,9 +479,76 @@ double Kernel::fertilityPerTick(int age) const {
     return 1.0 - std::pow(1.0 - annual, 1.0 / cfg_.ticksPerYear);
 }
 
+// Region and agent-specific fertility rate (modulated by culture, development, and wealth)
+double Kernel::fertilityPerTick(int age, std::uint32_t region_id, const Agent& agent,
+                                const std::array<double, 4>& region_beliefs) const {
+    double base_annual = fertilityRateAnnual(age);
+    if (base_annual == 0.0) return 0.0;
+    
+    // Cultural modulation based on regional beliefs
+    // Tradition-Progress axis (B[1]): Tradition (+1) → higher fertility, Progress (-1) → lower fertility
+    double tradition = region_beliefs[1];
+    double tradition_factor = 1.0 + tradition * 0.3;  // ±30% based on cultural values
+    
+    // Regional development → demographic transition (lower fertility with higher development)
+    const auto& regional_econ = economy_.getRegion(region_id);
+    double development_factor = 1.0 / (1.0 + regional_econ.development * 0.15);  // Higher development → lower fertility
+    
+    // Socioeconomic status: wealthier agents have fewer children (quality-quantity tradeoff)
+    const auto& agent_econ = economy_.getAgentEconomy(agent.id);
+    double wealth_factor = 1.0;
+    if (regional_econ.development > 0.5) {  // Demographic transition only in developed regions
+        // Normalize wealth relative to regional average
+        double avg_wealth = 1.0;  // Agents start at ~1.0 wealth
+        double relative_wealth = std::clamp(agent_econ.wealth / avg_wealth, 0.5, 3.0);
+        wealth_factor = 1.5 / relative_wealth;  // Richer → fewer children (inverse relationship)
+    }
+    
+    // Delayed childbearing in high-development regions (shift peak age)
+    double age_shift_factor = 1.0;
+    if (regional_econ.development > 1.0 && age < 25) {
+        // Reduce teen/early-20s fertility in developed regions
+        age_shift_factor = 0.5 + 0.5 * (age / 25.0);
+    }
+    
+    double adjusted_annual = base_annual * tradition_factor * development_factor * 
+                            wealth_factor * age_shift_factor;
+    adjusted_annual = std::clamp(adjusted_annual, 0.0, 0.25);  // Cap at 25% annual
+    
+    return 1.0 - std::pow(1.0 - adjusted_annual, 1.0 / cfg_.ticksPerYear);
+}
+
 void Kernel::stepDemography() {
     // Age increment every ticksPerYear ticks
     bool ageIncrement = (generation_ % cfg_.ticksPerYear == 0);
+    
+    // Compute regional belief centroids for cultural modulation
+    std::vector<std::array<double, 4>> region_belief_centroids(cfg_.regions);
+    std::vector<std::uint32_t> region_populations(cfg_.regions, 0);
+    
+    for (auto& centroid : region_belief_centroids) {
+        centroid.fill(0.0);
+    }
+    
+    for (const auto& agent : agents_) {
+        if (agent.alive) {
+            region_populations[agent.region]++;
+            region_belief_centroids[agent.region][0] += agent.B[0];
+            region_belief_centroids[agent.region][1] += agent.B[1];
+            region_belief_centroids[agent.region][2] += agent.B[2];
+            region_belief_centroids[agent.region][3] += agent.B[3];
+        }
+    }
+    
+    for (std::size_t r = 0; r < cfg_.regions; ++r) {
+        if (region_populations[r] > 0) {
+            double inv_pop = 1.0 / region_populations[r];
+            region_belief_centroids[r][0] *= inv_pop;
+            region_belief_centroids[r][1] *= inv_pop;
+            region_belief_centroids[r][2] *= inv_pop;
+            region_belief_centroids[r][3] *= inv_pop;
+        }
+    }
     
     std::vector<std::uint32_t> newBirths;
     std::bernoulli_distribution d(0.5);
@@ -475,8 +567,8 @@ void Kernel::stepDemography() {
             }
         }
         
-        // Mortality
-        double pDeath = mortalityPerTick(agent.age);
+        // Mortality (region-specific)
+        double pDeath = mortalityPerTick(agent.age, agent.region);
         d = std::bernoulli_distribution(pDeath);
         if (d(rng_)) {
             agent.alive = false;
@@ -488,9 +580,11 @@ void Kernel::stepDemography() {
         
         // Fertility (only for alive females)
         if (agent.female && agent.alive) {
-            double pBirth = fertilityPerTick(agent.age);
+            // Use region and agent-specific fertility rate (includes cultural, development, and wealth factors)
+            double pBirth = fertilityPerTick(agent.age, agent.region, agent, 
+                                            region_belief_centroids[agent.region]);
             
-            // Modulate by regional conditions
+            // Additional modulation by hardship and carrying capacity
             const auto& regional_econ = economy_.getRegion(agent.region);
             double hardship = regional_econ.hardship;
             
@@ -498,7 +592,7 @@ void Kernel::stepDemography() {
             pBirth *= (0.7 + 0.3 * (1.0 - hardship));
             
             // Carrying capacity pressure
-            double regionPop = static_cast<double>(regionIndex_[agent.region].size());
+            double regionPop = static_cast<double>(region_populations[agent.region]);
             double capacity = cfg_.regionCapacity;
             if (regionPop > capacity) {
                 double pressure = regionPop / capacity;
@@ -621,6 +715,9 @@ void Kernel::createChild(std::uint32_t motherId) {
     agents_.push_back(child);
     regionIndex_[child.region].push_back(child.id);
     
+    // Register with economy module
+    economy_.addAgent(child.id, child.region, rng_);
+    
     // Log birth event
     event_log_.logBirth(generation_, child.id, child.region, motherId);
 }
@@ -647,6 +744,103 @@ void Kernel::compactDeadAgents() {
                 }),
             agent.neighbors.end()
         );
+    }
+}
+
+void Kernel::stepMigration() {
+    // Migration decisions: young adults with high hardship + high mobility move to better regions
+    // This creates rural→urban, periphery→core flows
+    
+    // Compute regional attractiveness scores
+    std::vector<double> region_attractiveness(cfg_.regions, 0.0);
+    std::vector<std::uint32_t> region_populations(cfg_.regions, 0);
+    
+    for (const auto& agent : agents_) {
+        if (agent.alive) {
+            region_populations[agent.region]++;
+        }
+    }
+    
+    for (std::size_t r = 0; r < cfg_.regions; ++r) {
+        const auto& regional_econ = economy_.getRegion(r);
+        
+        // Attractiveness = welfare - hardship + development - crowding
+        double welfare_pull = regional_econ.welfare;
+        double hardship_push = -regional_econ.hardship * 2.0;  // Hardship is strong push
+        double development_pull = regional_econ.development * 0.2;
+        
+        // Crowding penalty (reduces attractiveness when over capacity)
+        double crowding = 0.0;
+        if (region_populations[r] > cfg_.regionCapacity) {
+            crowding = -(region_populations[r] / cfg_.regionCapacity - 1.0) * 0.5;
+        }
+        
+        region_attractiveness[r] = welfare_pull + hardship_push + development_pull + crowding;
+    }
+    
+    // Migration candidates: young adults (age 18-35) with high mobility
+    std::vector<std::uint32_t> migration_candidates;
+    for (std::size_t i = 0; i < agents_.size(); ++i) {
+        const auto& agent = agents_[i];
+        if (agent.alive && agent.age >= 18 && agent.age <= 35 && agent.m_mobility > 0.7) {
+            migration_candidates.push_back(i);
+        }
+    }
+    
+    // Process migration decisions (stochastic, only a fraction migrate each tick)
+    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
+    std::uniform_int_distribution<std::uint32_t> region_dist(0, cfg_.regions - 1);
+    
+    for (auto agent_id : migration_candidates) {
+        auto& agent = agents_[agent_id];
+        std::uint32_t origin = agent.region;
+        
+        // Migration propensity based on origin hardship and agent mobility
+        const auto& origin_econ = economy_.getAgentEconomy(agent_id);
+        double push_factor = origin_econ.hardship * agent.m_mobility;
+        
+        // Base migration rate: 1% per tick for high-hardship, high-mobility agents
+        double migration_prob = push_factor * 0.01;
+        
+        if (prob_dist(rng_) < migration_prob) {
+            // Find attractive destination (biased random choice)
+            std::uint32_t destination = origin;
+            double best_gain = 0.0;
+            
+            // Sample a few random regions and pick the most attractive
+            for (int attempt = 0; attempt < 5; ++attempt) {
+                std::uint32_t candidate = region_dist(rng_);
+                if (candidate == origin) continue;
+                
+                double gain = region_attractiveness[candidate] - region_attractiveness[origin];
+                if (gain > best_gain) {
+                    best_gain = gain;
+                    destination = candidate;
+                }
+            }
+            
+            // Migrate if destination is significantly better
+            if (destination != origin && best_gain > 0.3) {
+                // Remove from old region
+                auto& old_region_index = regionIndex_[origin];
+                old_region_index.erase(
+                    std::remove(old_region_index.begin(), old_region_index.end(), agent_id),
+                    old_region_index.end()
+                );
+                
+                // Add to new region
+                agent.region = destination;
+                regionIndex_[destination].push_back(agent_id);
+                
+                // Migrants lose some network connections (cultural disruption)
+                if (agent.neighbors.size() > 3) {
+                    // Keep only 30% of connections
+                    std::size_t keep_count = agent.neighbors.size() * 3 / 10;
+                    std::shuffle(agent.neighbors.begin(), agent.neighbors.end(), rng_);
+                    agent.neighbors.resize(keep_count);
+                }
+            }
+        }
     }
 }
 

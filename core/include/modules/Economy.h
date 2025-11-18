@@ -104,6 +104,9 @@ public:
     const AgentEconomy& getAgentEconomy(std::uint32_t agent_id) const;
     const std::vector<AgentEconomy>& agents() const { return agents_; }
     
+    // Add a new agent to the economy (for births)
+    void addAgent(std::uint32_t agent_id, std::uint32_t region_id, std::mt19937_64& rng);
+    
     // Global metrics
     double globalWelfare() const;
     double globalInequality() const;
