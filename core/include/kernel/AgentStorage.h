@@ -84,4 +84,9 @@ public:
             // Note: We typically don't sync network BACK unless it changed
         }
     }
+
+    // Add this method
+    size_t getEdgeCount() const {
+        return neighbor_indices.size();
+    }
 };

@@ -244,14 +244,22 @@ void Kernel::updateBeliefs() {
     }
 }
 
+#include "kernel/GpuWorker.h"
+
+// ... inside Kernel::step() ...
+
 void Kernel::step() {
     // 1. Sync Legacy -> SoA (Prepare for Physics)
     // This copies the current state of agents into the contiguous arrays
     gpu_storage_.syncFromLegacy(agents_);
 
-    // 2. Run the High-Performance Physics
-    // This replaces the old updateBeliefs() call
+    // 2. Run Physics (Dispatch based on compile-time or run-time flag)
+    // For now, we assume if CUDA is compiled in, we use it.
+#if defined(USE_CUDA)
+    launchGpuBeliefUpdate(gpu_storage_, cfg_);
+#else
     updateBeliefsSoA();
+#endif
 
     // 3. Sync SoA -> Legacy (Commit changes)
     // This copies the new B0-B3 values back so Economy/Demography can see them
@@ -1013,5 +1021,112 @@ Kernel::Statistics Kernel::getStatistics() const {
     }
     
     return stats;
+}
+
+// Helper for the physics (inline so it can potentially be shared)
+// This matches the logic in your Kernel.h
+inline double fastTanhSoA(double x) {
+    double x2 = x * x;
+    return x * (27.0 + x2) / (27.0 + 9.0 * x2);
+}
+
+void Kernel::updateBeliefsSoA() {
+    // 1. Get the lightweight View (pointers only)
+    auto view = gpu_storage_.getView();
+    const uint32_t count = view.count;
+    const double stepSize = cfg_.stepSize;
+
+    // 2. Allocate Temporary Buffers for Deltas (Synchronous Update)
+    // In the future GPU version, this will be a pre-allocated GPU buffer.
+    std::vector<double> d0(count, 0.0);
+    std::vector<double> d1(count, 0.0);
+    std::vector<double> d2(count, 0.0);
+    std::vector<double> d3(count, 0.0);
+
+    // 3. Parallel Physics Loop (The Hot Path)
+    #pragma omp parallel for schedule(dynamic)
+    for (uint32_t i = 0; i < count; ++i) {
+        // Load My State
+        double myB0 = view.B0[i];
+        double myB1 = view.B1[i];
+        double myB2 = view.B2[i];
+        double myB3 = view.B3[i];
+
+        // Calculate my Norm Squared (needed for similarity gate)
+        double myNormSq = myB0*myB0 + myB1*myB1 + myB2*myB2 + myB3*myB3;
+        
+        // Properties
+        double mySusc = view.susceptibility[i];
+        double myFluency = view.fluency[i];
+        // Note: If you didn't implement primaryLang arrays yet, 
+        // we simplify language logic to just fluency check for now.
+
+        // Network Iteration (CSR Style)
+        int start = view.neighbor_offsets[i];
+        int end   = start + view.neighbor_counts[i];
+
+        double delta0 = 0.0, delta1 = 0.0, delta2 = 0.0, delta3 = 0.0;
+
+        for (int idx = start; idx < end; ++idx) {
+            int neighborId = view.neighbor_indices[idx];
+
+            // Load Neighbor State
+            double theirB0 = view.B0[neighborId];
+            double theirB1 = view.B1[neighborId];
+            double theirB2 = view.B2[neighborId];
+            double theirB3 = view.B3[neighborId];
+            double theirNormSq = theirB0*theirB0 + theirB1*theirB1 + 
+                                 theirB2*theirB2 + theirB3*theirB3;
+
+            // --- Physics Logic ---
+            
+            // 1. Similarity Gate
+            double dot = myB0*theirB0 + myB1*theirB1 + myB2*theirB2 + myB3*theirB3;
+            double normProd = myNormSq * theirNormSq;
+            double sim = 1.0; // Default if near zero
+            if (normProd > 1e-9) {
+                sim = dot / std::sqrt(normProd);
+            }
+            // Linear gate: 0 if < floor, 1 if > 1
+            double gate = (sim - cfg_.simFloor) / (1.0 - cfg_.simFloor);
+            gate = std::max(0.0, gate);
+
+            // 2. Language Cap (Simplified for SoA transition)
+            // Using generic fluency average as proxy for communication quality
+            double langQ = 0.5 * (myFluency + view.fluency[neighborId]);
+            
+            // 3. Final Weight
+            double weight = stepSize * gate * langQ * mySusc;
+
+            // 4. Accumulate Force
+            if (weight > 1e-6) {
+                delta0 += weight * fastTanhSoA(theirB0 - myB0);
+                delta1 += weight * fastTanhSoA(theirB1 - myB1);
+                delta2 += weight * fastTanhSoA(theirB2 - myB2);
+                delta3 += weight * fastTanhSoA(theirB3 - myB3);
+            }
+        }
+
+        // Store deltas
+        d0[i] = delta0;
+        d1[i] = delta1;
+        d2[i] = delta2;
+        d3[i] = delta3;
+    }
+
+    // 4. Apply Deltas
+    #pragma omp parallel for
+    for (uint32_t i = 0; i < count; ++i) {
+        view.B0[i] += d0[i];
+        view.B1[i] += d1[i];
+        view.B2[i] += d2[i];
+        view.B3[i] += d3[i];
+        
+        // Clamping (keep beliefs valid)
+        view.B0[i] = std::max(-1.0, std::min(1.0, view.B0[i]));
+        view.B1[i] = std::max(-1.0, std::min(1.0, view.B1[i]));
+        view.B2[i] = std::max(-1.0, std::min(1.0, view.B2[i]));
+        view.B3[i] = std::max(-1.0, std::min(1.0, view.B3[i]));
+    }
 }
 
