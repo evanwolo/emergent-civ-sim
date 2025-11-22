@@ -1,4 +1,5 @@
 #include "modules/Economy.h"
+#include "modules/TradeNetwork.h"
 #include "kernel/Kernel.h"  // For Agent definition
 #include <algorithm>
 #include <numeric>
@@ -6,6 +7,7 @@
 #include <random>
 #include <cctype>
 #include <iostream>
+#include <memory>
 
 // Thread-local RNG for parallel operations (prevents race conditions)
 namespace {
@@ -36,6 +38,8 @@ constexpr double PRICE_ADJUSTMENT_RATE = 0.05;  // per tick based on supply/dema
 // Transport cost (scales with distance)
 constexpr double BASE_TRANSPORT_COST = 0.02;  // 2% per hop
 
+Economy::~Economy() = default;
+
 void Economy::init(std::uint32_t num_regions,
                    std::uint32_t num_agents,
                    std::mt19937_64& rng,
@@ -46,6 +50,10 @@ void Economy::init(std::uint32_t num_regions,
     agents_.clear();
     start_condition_name_ = start_condition;
     start_profile_ = resolveStartCondition(start_condition);
+    
+    // Initialize trade network
+    trade_network_ = std::make_unique<TradeNetwork>();
+    trade_network_->configure(num_regions);
     
     std::normal_distribution<double> devNoise(0.0, start_profile_.developmentJitter);
     for (std::uint32_t i = 0; i < num_regions; ++i) {
@@ -258,6 +266,8 @@ void Economy::initializeEndowments(std::mt19937_64& rng) {
 void Economy::initializeTradeNetwork() {
     // Simple trade network: each region trades with 5-10 neighbors
     // For now, use simple spatial proximity (adjacent region IDs)
+    std::vector<std::vector<std::uint32_t>> trade_partners(regions_.size());
+    
     for (std::size_t i = 0; i < regions_.size(); ++i) {
         regions_[i].trade_partners.clear();
         
@@ -267,7 +277,13 @@ void Economy::initializeTradeNetwork() {
             int partner = (static_cast<int>(i) + offset + static_cast<int>(regions_.size())) 
                          % static_cast<int>(regions_.size());
             regions_[i].trade_partners.push_back(static_cast<std::uint32_t>(partner));
+            trade_partners[i].push_back(static_cast<std::uint32_t>(partner));
         }
+    }
+    
+    // Build matrix topology
+    if (trade_network_) {
+        trade_network_->buildTopology(trade_partners);
     }
 }
 
@@ -332,52 +348,35 @@ void Economy::computeTrade() {
         }
     }
     
-    // Compute trade flows based on surplus/deficit and prices
-    for (auto& region : regions_) {
-        if (region.population == 0) continue;
+    if (!trade_network_) return;
+    
+    // Build production and demand vectors
+    std::vector<std::array<double, kGoodTypes>> production(regions_.size());
+    std::vector<std::array<double, kGoodTypes>> demand(regions_.size());
+    std::vector<std::uint32_t> population(regions_.size());
+    
+    for (std::size_t i = 0; i < regions_.size(); ++i) {
+        production[i] = regions_[i].production;
+        population[i] = regions_[i].population;
         
-        for (int g = 0; g < kGoodTypes; ++g) {
-            double per_capita = region.production[g] / region.population;
-            double subsistence = (g == FOOD) ? FOOD_SUBSISTENCE : 
-                               (g == ENERGY) ? ENERGY_SUBSISTENCE :
-                               (g == TOOLS) ? TOOLS_SUBSISTENCE :
-                               (g == SERVICES) ? SERVICES_SUBSISTENCE : LUXURY_SUBSISTENCE;
-            
-            double surplus = region.production[g] - (region.population * subsistence);
-            
-            if (surplus > 0.0) {
-                // Region has surplus - export to deficient partners
-                double available_export = surplus * 0.7;  // keep some reserve
-                double export_per_partner = available_export / region.trade_partners.size();
-                
-                for (auto partner_id : region.trade_partners) {
-                    auto& partner = regions_[partner_id];
-                    double partner_deficit = (partner.population * subsistence) - partner.production[g];
-                    
-                    if (partner_deficit > 0.0) {
-                        double trade_amount = std::min(export_per_partner, partner_deficit * 0.5);
-                        
-                        // Calculate transport cost based on "distance" (simplified)
-                        int distance = std::abs(static_cast<int>(region.region_id) - static_cast<int>(partner_id));
-                        distance = std::min(distance, static_cast<int>(regions_.size()) - distance);  // wrap around
-                        double transport_cost = BASE_TRANSPORT_COST * distance;
-                        
-                        TradeLink link;
-                        link.from_region = region.region_id;
-                        link.to_region = partner_id;
-                        link.good = static_cast<GoodType>(g);
-                        link.volume = trade_amount;
-                        link.transport_cost = transport_cost;
-                        link.price = region.prices[g];
-                        
-                        trade_links_.push_back(link);
-                        
-                        region.trade_balance[g] -= trade_amount;  // export
-                        partner.trade_balance[g] += trade_amount * (1.0 - transport_cost);  // import (minus transport loss)
-                    }
-                }
-            }
+        // Compute demand based on subsistence needs + welfare-driven consumption
+        if (population[i] > 0) {
+            demand[i][FOOD] = population[i] * (FOOD_SUBSISTENCE + regions_[i].welfare * 0.2);
+            demand[i][ENERGY] = population[i] * (ENERGY_SUBSISTENCE + regions_[i].welfare * 0.3);
+            demand[i][TOOLS] = population[i] * (TOOLS_SUBSISTENCE + regions_[i].welfare * 0.2);
+            demand[i][LUXURY] = population[i] * (LUXURY_SUBSISTENCE + regions_[i].welfare * 0.5);
+            demand[i][SERVICES] = population[i] * (SERVICES_SUBSISTENCE + regions_[i].welfare * 0.4);
+        } else {
+            demand[i].fill(0.0);
         }
+    }
+    
+    // Compute flows via matrix diffusion (single operation replaces all loops)
+    auto trade_balances = trade_network_->computeFlows(production, demand, population, 0.15);
+    
+    // Apply trade balances to regions
+    for (std::size_t i = 0; i < regions_.size(); ++i) {
+        regions_[i].trade_balance = trade_balances[i];
     }
 }
 

@@ -12,10 +12,16 @@ option(ENABLE_OPENMP "Enable OpenMP parallelization" ON)
 
 # Compiler flags
 if(MSVC)
-  add_compile_options(/W4 /O2)
+  add_compile_options(/W4 /O2 /arch:AVX2)
+  # Enable vectorization reports in MSVC
+  add_compile_options(/Qvec-report:2)
 else()
   add_compile_options(-Wall -Wextra -pedantic)
-  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG -ftree-vectorize -ffast-math")
+  # Enable vectorization reports in GCC/Clang
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    add_compile_options(-fopt-info-vec-optimized)
+  endif()
 endif()
 
 # OpenMP

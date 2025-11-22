@@ -2,20 +2,13 @@
 #define ECONOMY_H
 
 #include <array>
-#include <vector>
+#include <memory>
+
+#include "modules/EconomyTypes.h"
+#include "modules/TradeNetwork.h"
 #include <cstdint>
 #include <string>
 #include <random>
-
-// Economic goods (expanded from simple resources)
-constexpr int kGoodTypes = 5;
-enum GoodType { 
-    FOOD = 0,      // Agricultural products
-    ENERGY = 1,    // Fuel, electricity
-    TOOLS = 2,     // Capital goods, machinery (was INDUSTRY)
-    LUXURY = 3,    // Non-essential consumer goods
-    SERVICES = 4   // Healthcare, education, entertainment
-};
 
 // Trade link between regions with transport costs
 struct TradeLink {
@@ -90,6 +83,7 @@ struct Agent;
 
 class Economy {
 public:
+    ~Economy();
     void init(std::uint32_t num_regions,
               std::uint32_t num_agents,
               std::mt19937_64& rng,
@@ -146,6 +140,9 @@ private:
     double war_allocation_ = 0.0;
     std::string start_condition_name_ = "baseline";
     StartConditionProfile start_profile_{};
+    
+    // Matrix-based trade diffusion network
+    std::unique_ptr<TradeNetwork> trade_network_;
     
     void initializeEndowments(std::mt19937_64& rng);
     void initializeTradeNetwork();

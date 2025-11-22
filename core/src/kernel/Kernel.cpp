@@ -1,4 +1,5 @@
 #include "kernel/Kernel.h"
+#include "modules/Culture.h"
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -34,6 +35,7 @@ void Kernel::reset(const KernelConfig& cfg) {
     rng_.seed(cfg.seed);
     psychology_.configure(cfg_.regions, cfg_.seed ^ 0x9E3779B97F4A7C15ULL);
     health_.configure(cfg_.regions, cfg_.seed ^ 0xBF58476D1CE4E5B9ULL);
+    mean_field_.configure(cfg_.regions);
     initAgents();
     buildSmallWorld();
     
@@ -183,63 +185,111 @@ void Kernel::buildSmallWorld() {
 }
 
 void Kernel::updateBeliefs() {
-    // Compute deltas in parallel-friendly way
-    std::vector<std::array<double, 4>> dx(agents_.size());
-    
-    const std::size_t n = agents_.size();
-    const double stepSize = cfg_.stepSize;
-    
-    #pragma omp parallel for schedule(dynamic)
-    for (std::size_t i = 0; i < n; ++i) {
-        const auto& ai = agents_[i];
-        if (!ai.alive) continue;  // Skip dead agents
+    if (cfg_.useMeanField) {
+        // **MEAN FIELD APPROXIMATION**: O(N) complexity, decoupled from network density
+        // Compute regional fields once
+        mean_field_.computeFields(agents_, regionIndex_);
         
-        std::array<double, 4> acc{0, 0, 0, 0};
+        // Update each agent based on regional field
+        const std::size_t n = agents_.size();
+        const double stepSize = cfg_.stepSize;
         
-        // Cache agent properties used in inner loop
-        const double ai_susceptibility = ai.m_susceptibility;
-        const double ai_comm = ai.m_comm;
-        
-        for (auto jid : ai.neighbors) {
-            if (jid >= agents_.size()) continue;  // Safety check
-            const auto& aj = agents_[jid];
-            if (!aj.alive) continue;  // Skip dead neighbors
+        #pragma omp parallel for schedule(dynamic)
+        for (std::size_t i = 0; i < n; ++i) {
+            auto& agent = agents_[i];
+            if (!agent.alive) continue;
             
-            double s = similarityGate(ai, aj);
-            double lq = languageQuality(ai, aj);
-            double comm = 0.5 * (ai_comm + aj.m_comm);
-            double weight = stepSize * s * lq * comm * ai_susceptibility;
+            // Get regional field
+            const auto& field = mean_field_.getRegionalField(agent.region);
+            double field_strength = mean_field_.getFieldStrength(agent.region);
             
-            // Unroll belief dimension loop for better performance
-            acc[0] += weight * fastTanh(aj.B[0] - ai.B[0]);
-            acc[1] += weight * fastTanh(aj.B[1] - ai.B[1]);
-            acc[2] += weight * fastTanh(aj.B[2] - ai.B[2]);
-            acc[3] += weight * fastTanh(aj.B[3] - ai.B[3]);
+            // Compute influence from field
+            double weight = stepSize * field_strength * agent.m_comm * agent.m_susceptibility;
+            
+            // Update beliefs toward field
+            std::array<double, 4> dx;
+            dx[0] = weight * fastTanh(field[0] - agent.B[0]);
+            dx[1] = weight * fastTanh(field[1] - agent.B[1]);
+            dx[2] = weight * fastTanh(field[2] - agent.B[2]);
+            dx[3] = weight * fastTanh(field[3] - agent.B[3]);
+            
+            // Apply updates
+            agent.x[0] += dx[0];
+            agent.x[1] += dx[1];
+            agent.x[2] += dx[2];
+            agent.x[3] += dx[3];
+            
+            agent.B[0] = fastTanh(agent.x[0]);
+            agent.B[1] = fastTanh(agent.x[1]);
+            agent.B[2] = fastTanh(agent.x[2]);
+            agent.B[3] = fastTanh(agent.x[3]);
+
+            // Update cached norm
+            agent.B_norm_sq = agent.B[0] * agent.B[0] +
+                             agent.B[1] * agent.B[1] +
+                             agent.B[2] * agent.B[2] +
+                             agent.B[3] * agent.B[3];
+        }
+    } else {
+        // **ORIGINAL PAIRWISE UPDATES**: O(N·k) complexity
+        // Compute deltas in parallel-friendly way
+        std::vector<std::array<double, 4>> dx(agents_.size());
+        
+        const std::size_t n = agents_.size();
+        const double stepSize = cfg_.stepSize;
+        
+        #pragma omp parallel for schedule(dynamic)
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto& ai = agents_[i];
+            if (!ai.alive) continue;  // Skip dead agents
+            
+            std::array<double, 4> acc{0, 0, 0, 0};
+            
+            // Cache agent properties used in inner loop
+            const double ai_susceptibility = ai.m_susceptibility;
+            const double ai_comm = ai.m_comm;
+            
+            for (auto jid : ai.neighbors) {
+                if (jid >= agents_.size()) continue;  // Safety check
+                const auto& aj = agents_[jid];
+                if (!aj.alive) continue;  // Skip dead neighbors
+                
+                double s = similarityGate(ai, aj);
+                double lq = languageQuality(ai, aj);
+                double comm = 0.5 * (ai_comm + aj.m_comm);
+                double weight = stepSize * s * lq * comm * ai_susceptibility;
+                
+                // Unroll belief dimension loop for better performance
+                acc[0] += weight * fastTanh(aj.B[0] - ai.B[0]);
+                acc[1] += weight * fastTanh(aj.B[1] - ai.B[1]);
+                acc[2] += weight * fastTanh(aj.B[2] - ai.B[2]);
+                acc[3] += weight * fastTanh(aj.B[3] - ai.B[3]);
+            }
+            
+            dx[i] = acc;
         }
         
-        dx[i] = acc;
-    }
-    
-    // Apply updates
-    #pragma omp parallel for
-    for (std::size_t i = 0; i < n; ++i) {
-        if (!agents_[i].alive) continue;  // Skip dead agents
-        
-        agents_[i].x[0] += dx[i][0];
-        agents_[i].x[1] += dx[i][1];
-        agents_[i].x[2] += dx[i][2];
-        agents_[i].x[3] += dx[i][3];
-        
-        agents_[i].B[0] = fastTanh(agents_[i].x[0]);
-        agents_[i].B[1] = fastTanh(agents_[i].x[1]);
-        agents_[i].B[2] = fastTanh(agents_[i].x[2]);
-        agents_[i].B[3] = fastTanh(agents_[i].x[3]);
+        // Apply updates
+        #pragma omp parallel for
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!agents_[i].alive) continue;  // Skip dead agents
+            
+            agents_[i].x[0] += dx[i][0];
+            agents_[i].x[1] += dx[i][1];
+            agents_[i].x[2] += dx[i][2];
+            agents_[i].x[3] += dx[i][3];
+            
+            agents_[i].B[0] = fastTanh(agents_[i].x[0]);
+            agents_[i].B[1] = fastTanh(agents_[i].x[1]);
+            agents_[i].B[2] = fastTanh(agents_[i].x[2]);
+            agents_[i].B[3] = fastTanh(agents_[i].x[3]);
 
-        // Update cached norm
-        agents_[i].B_norm_sq = agents_[i].B[0] * agents_[i].B[0] +
-                                agents_[i].B[1] * agents_[i].B[1] +
-                                agents_[i].B[2] * agents_[i].B[2] +
-                                agents_[i].B[3] * agents_[i].B[3];
+            // Update cached norm
+            agents_[i].B_norm_sq = agents_[i].B[0] * agents_[i].B[0] +
+                                   agents_[i].B[1] * agents_[i].B[1] +
+                                   agents_[i].B[2] * agents_[i].B[2] +
+                                   agents_[i].B[3] * agents_[i].B[3];
+        }
     }
 }
 
@@ -359,7 +409,10 @@ void Kernel::step() {
     
     // Auto-detect movements every 100 ticks
     if (generation_ % 100 == 0) {
-        auto clusters = culture_.detectCultures(agents_, 8, 50, 0.5);
+        // Batch clustering every so often for movement detection
+        // Use cluster count from configuration (KernelConfig::movementClusterCount)
+        KMeansClustering clustering(cfg_.movementClusterCount);
+        auto clusters = clustering.run(*this);
         movements_.update(*this, clusters, generation_);
     }
 }

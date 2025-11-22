@@ -10,6 +10,7 @@
 #include "modules/Psychology.h"
 #include "modules/Health.h"
 #include "modules/Movement.h"
+#include "modules/MeanField.h"
 #include "utils/EventLog.h"
 
 // ---------- Configuration ----------
@@ -20,6 +21,7 @@ struct KernelConfig {
     double rewireProb = 0.05;           // p for Watts-Strogatz
     double stepSize = 0.15;             // eta (global influence rate)
     double simFloor = 0.05;             // minimum similarity gate
+    bool useMeanField = true;           // Use mean field approximation (faster)
     std::uint64_t seed = 42;
     std::string startCondition = "baseline"; // economic starting profile
     
@@ -189,6 +191,7 @@ private:
     PsychologyModule psychology_;
     HealthModule health_;
     MovementModule movements_;  // Movement module
+    MeanFieldApproximation mean_field_;  // Mean field approximation
     EventLog event_log_;  // Event tracking system
 
     // Helper functions
