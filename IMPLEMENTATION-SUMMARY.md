@@ -1,6 +1,37 @@
-# Phase 3 Foundation: Movement Module
+# Implementation Summary
 
-## Summary
+## Latest: Emergent Systems Refactoring
+
+Comprehensive refactoring from hardcoded deterministic behavior to truly emergent dynamics. **18 hardcoded behaviors replaced** across 3 tiers.
+
+### Tier 1 Fixes (System-Breaking)
+1. **Inequality** - Now computed from actual Gini coefficient, not system labels
+2. **Efficiency** - Emerges from development/inequality, not lookup tables
+3. **Income Distribution** - No feudal elite bonuses; Matthew effect emerges naturally
+4. **Leadership** - No pre-selection; leaders emerge from trait variation
+5. **Belief Evolution** - Personality-modulated wealth influence, not determinism
+6. **System Transitions** - Probabilistic with institutional inertia
+
+### Tier 2 Fixes (Significant Constraints)
+7. **Price Bounds** - Expanded to 0.01-100.0 (was 0.1-10.0)
+8. **Trade Network** - Geography-based partners (2-15) using coordinates
+9. **Migration Age** - Age-weighted mobility curve (was 18-35 restriction)
+10. **Migration Threshold** - Personality-based (openness affects rooting)
+11. **Network Retention** - Personality-based (sociality affects retention)
+12. **Language Zones** - Fuzzy distance-based boundaries with dialects
+
+### Tier 3 Fixes (Variability Constants)
+13. **Regional Needs** - Climate/development-based subsistence
+14. **Hardship Weights** - Development-scaled priorities
+15. **Stress Sensitivity** - Personality-based coefficients
+16. **Demographic Rates** - Development-modified mortality/fertility
+17. **Infection Weights** - Adaptive by region type (urban/rural/poor)
+
+See `docs/EMERGENT-SYSTEMS.md` for full technical details.
+
+---
+
+## Phase 3: Movement Module
 
 Successfully implemented the **Movement module** (Phase 3) while cleaning up technical debt from Phase 2. The simulation now detects emergent social movements from cultural clusters when economic and social conditions trigger formation.
 

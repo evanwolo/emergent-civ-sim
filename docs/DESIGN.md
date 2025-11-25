@@ -49,6 +49,39 @@ Consequences ripple through social, political, and military domains as agents re
 
 ---
 
+## Emergent Design Philosophy
+
+### Core Principle
+
+**Nothing is predetermined by labels.** All macro-level patterns (inequality, efficiency, cultural boundaries, class structure) must emerge from:
+- Agent-level interactions
+- Material conditions (geography, resources, development)
+- Personality variation
+- Network topology
+
+### What Emergence Means Here
+
+| Concept | NOT Emergent (Avoided) | Emergent (Implemented) |
+|---------|------------------------|------------------------|
+| Inequality | System label → fixed Gini | Gini computed from actual agent wealth distribution |
+| Efficiency | Economic system type → efficiency | Development + inequality + coordination → efficiency |
+| Leadership | Every 100th agent pre-selected | Natural trait variation + network position |
+| Prices | Bounded 0.5-2.0 | Full supply/demand discovery (0.01-100.0) |
+| Trade | Fixed ±5 region partners | Geography-based distance selection |
+| Language zones | Hard quadrant boundaries | Fuzzy distance-based probability |
+| Stress | Uniform coefficients | Personality-based sensitivity |
+| Demographics | Fixed rates everywhere | Development-modified mortality/fertility |
+
+### Validation Criteria
+
+Outcomes are considered realistic if they:
+1. Show **variance** across comparable units (regions, agents)
+2. Produce **recognizable sociological patterns** (Kuznets curve, resource curse, demographic transition)
+3. Allow **counterexamples** (wealthy egalitarians, poor authoritarians)
+4. Generate **geographic structure** without hard-coding it
+
+---
+
 ## Kernel (Agent Layer)
 
 ### Agent Structure
@@ -64,9 +97,9 @@ struct Agent {
   uint32_t parent1_id;      // lineage tracking
   uint32_t parent2_id;
   uint32_t lineage_id;      // clan/house/family identifier
-  LanguageProfile langs;    // primary + repertoire with fluency levels
+  LanguageProfile langs;    // primary (family 0-3) + dialect (0-255) + fluency
   vector<uint32_t> neighbors; // small-world social network
-  Region* region;           // geographic location
+  Region* region;           // geographic location (with x,y coordinates)
 };
 ```
 
@@ -80,7 +113,7 @@ struct Agent {
    - Personality susceptibility (openness, conformity)
    - Global step size (tech multiplier)
 3. Apply tanh-bounded update to belief vector
-4. Technology adjusts reach (long-range edges) and speed
+4. Wealth influence modulated by personality (open-minded resist determinism)
 
 **Formula:**
 ```
@@ -93,7 +126,7 @@ struct Agent {
 
 ### Demographics
 
-- **Birth/Death**: Regional rates produce/remove agents
+- **Birth/Death**: Development-modified regional rates
 - **Inheritance**: Children receive:
   - Trait mixture from parents + noise
   - Linguistic repertoire from parents + local exposure

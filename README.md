@@ -2,30 +2,35 @@
 
 A nation-scale grand strategy simulation where societies evolve bottom-up from 50,000+ agents. Cultures, movements, economies, and institutions emerge without scripts. You govern through policy, institutions, and strategic decisions—no micromanagement.
 
-## Current Status (Phase 2.3+)
+## Current Status (Phase 2.3+ / Emergent Systems Update)
 
 **✅ Core Systems Implemented:**
-- **Kernel:** 50k agents, 4D belief dynamics (Authority/Tradition/Hierarchy/Faith), Watts-Strogatz small-world networks, 200 regions
-- **Demographics:** Age-structured population (0-90 years), births/deaths, genetic+cultural inheritance, multi-generational dynamics
-- **Economy:** 5-good trade system with dramatic regional specialization and scarcity
+- **Kernel:** 50k agents, 4D belief dynamics (Authority/Tradition/Hierarchy/Faith), Watts-Strogatz small-world networks, 200 regions with coordinates
+- **Demographics:** Age-structured population (0-90 years), development-modified mortality/fertility, genetic+cultural inheritance
+- **Economy:** 5-good trade system with geography-based trade networks
   - Goods: Food, Energy, Tools, Luxury, Services
-  - Dynamic pricing, regional endowments, trade networks
-  - Wealth distribution (Gini coefficient), hardship tracking
-  - Economic systems emerge from beliefs: cooperative, mixed, market, feudal, planned
+  - Emergent pricing (0.01-100.0 range), regional needs based on climate/development
+  - Wealth distribution (actual Gini coefficient), hardship tracking
+  - Economic systems emerge probabilistically from beliefs + material conditions
+  - No system-label determinism—inequality/efficiency emerge from agent wealth
+- **Language:** 4 language families with 256 dialects, fuzzy geographic boundaries
 - **Culture:** Charismatic hub detection, identity group formation via clustering (K-means, DBSCAN)
 - **Movements:** Political/social movement formation from clusters
-  - Formation triggers: size, coherence, charisma density, economic hardship
-  - Power metrics: street capacity, charisma, coherence
-  - Lifecycle stages: Birth, Growth, Plateau, Schism, Decline, Dead
+- **Psychology:** Personality-based stress sensitivity (openness/conformity/assertiveness/sociality)
+- **Health:** Adaptive infection pressure weights by region type (urban/rural/poor)
 - **Docker:** Multi-stage build (~150MB image), compose profiles for interactive/batch modes
 
-**✅ Scale & Performance:**
-- 50,000 agents with full personality traits, beliefs, networks, economy
-- 200 regions with specialized resource endowments
-- Trade volume: ~24,000 units/tick at equilibrium
-- ~100ms/tick with economy updates every 10 ticks
-- Demographics: age-structured population (0-90 years), births/deaths
+**✅ Emergent Dynamics (18 hardcoded behaviors removed):**
+- Inequality computed from actual Gini, not system labels
+- Economic efficiency emerges from development + moderate inequality
+- Leadership emerges naturally (no pre-selection)
+- Trade partners based on geographic distance (2-15 partners)
+- Migration uses age-weighted mobility + personality thresholds
+- Regional subsistence needs vary by climate/development
+- Stress sensitivity varies by personality traits
+- Demographic rates modified by regional development
 
+See [docs/EMERGENT-SYSTEMS.md](docs/EMERGENT-SYSTEMS.md) for technical details on emergent refactoring.
 See [DESIGN.md](docs/DESIGN.md) for architecture and [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ---
@@ -122,10 +127,10 @@ data/              # Simulation outputs (snapshots, metrics, logs)
 ## Documentation
 
 - **[DESIGN.md](docs/DESIGN.md)** - System architecture, emergent structures, ontology
-- **[CHANGELOG.md](CHANGELOG.md)** - Version history and milestones (Phase 2.3 current)
+- **[docs/EMERGENT-SYSTEMS.md](docs/EMERGENT-SYSTEMS.md)** - Technical details on emergent refactoring (18 fixes)
+- **[docs/FEATURES.md](docs/FEATURES.md)** - Comprehensive feature documentation
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and milestones
 - **[docs/DOCKER.md](docs/DOCKER.md)** - Container deployment, Kubernetes examples
-- **[docs/ECONOMY-PHASE-2.2.md](docs/ECONOMY-PHASE-2.2.md)** - Economy module design
-- **[docs/PHASE-2.3-SUMMARY.md](docs/PHASE-2.3-SUMMARY.md)** - Latest phase summary
 
 ---
 

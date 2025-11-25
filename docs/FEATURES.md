@@ -34,8 +34,14 @@ Each of the 50,000 agents has:
 - `lineage_id`: Family/clan identifier
 
 **Language:**
-- `primaryLang`: Primary language (0-3, 4 base languages)
+- `primaryLang`: Language family (0-3: Western, Eastern, Northern, Southern)
+- `dialect`: Regional dialect within family (0-255, encodes geographic origin)
 - `fluency`: Language skill level (0.0-1.0)
+
+**Language Assignment:**
+- Distance-based probability to language zone centers
+- Fuzzy boundaries allow overlap regions
+- Dialects encode fine-grained regional identity
 
 **Personality Traits (0.0-1.0):**
 - `openness`: Receptiveness to new ideas
@@ -91,16 +97,22 @@ struct KernelConfig {
 
 ### Mortality System
 
-**Age-Specific Death Rates (annual):**
-| Age Range | Annual Mortality | Description |
-|-----------|-----------------|-------------|
-| 0-5       | 1%              | Child mortality |
-| 5-15      | 0.1%            | Youth |
-| 15-50     | 0.2%            | Prime adult |
-| 50-70     | 1%              | Middle age |
-| 70-85     | 5%              | Elderly |
-| 85-90     | 15%             | Very old |
-| 90+       | 100%            | Hard cap |
+**Age-Specific Death Rates (annual, modified by development):**
+| Age Range | Base Rate | Low Dev | High Dev | Description |
+|-----------|-----------|---------|----------|-------------|
+| 0-5       | 1%        | 1.0%    | 0.3%     | Infant mortality (most affected) |
+| 5-15      | 0.1%      | 0.1%    | 0.05%    | Youth |
+| 15-50     | 0.2%      | 0.2%    | 0.14%    | Prime adult |
+| 50-70     | 1%        | 1.0%    | 0.8%     | Middle age |
+| 70-85     | 5%        | 5.0%    | 4.5%     | Elderly (least affected) |
+| 85-90     | 15%       | 15%     | 13.5%    | Very old |
+| 90+       | 100%      | 100%    | 100%     | Hard cap |
+
+**Development Effect:**
+- Infant: `base_rate × (0.3 + 0.7 × (1-development))`
+- Child: `base_rate × (0.5 + 0.5 × (1-development))`
+- Adult: `base_rate × (0.7 + 0.3 × (1-development))`
+- Elderly: `base_rate × (0.9 + 0.1 × (1-development))`
 
 **Implementation:**
 - Converted to per-tick probability: `1 - (1 - annual)^(1/ticksPerYear)`
@@ -111,15 +123,20 @@ struct KernelConfig {
 ### Fertility System
 
 **Age-Specific Birth Rates (annual, females only):**
-| Age Range | Annual Fertility | Description |
-|-----------|-----------------|-------------|
-| <15       | 0%              | Pre-reproductive |
-| 15-20     | 5%              | Teen fertility |
-| 20-30     | 12%             | Peak fertility |
-| 30-35     | 10%             | High fertility |
-| 35-40     | 5%              | Declining |
-| 40-45     | 2%              | Late fertility |
-| 45+       | 0%              | Post-reproductive |
+| Age Range | Base Rate | High Dev Rate | Description |
+|-----------|-----------|---------------|-------------|
+| <15       | 0%        | 0%            | Pre-reproductive |
+| 15-20     | 5%        | 3%            | Teen fertility |
+| 20-30     | 12%       | 8%            | Peak fertility |
+| 30-35     | 10%       | 7%            | High fertility |
+| 35-40     | 5%        | 4%            | Declining |
+| 40-45     | 2%        | 1.5%          | Late fertility |
+| 45+       | 0%        | 0%            | Post-reproductive |
+
+**Demographic Transition Effect:**
+```cpp
+fertility *= (1.0 - development * 0.3);  // High development reduces fertility
+```
 
 **Modulation Factors:**
 1. **Economic Hardship:**
@@ -212,7 +229,21 @@ for each agent i:
 
 ### Economic Feedback on Beliefs
 
-**Hardship Effects:**
+**Personality-Modulated Wealth Influence:**
+```cpp
+// Wealth influence is modulated by openness (closed-minded more affected)
+double wealth_influence = (1.0 - agent.openness) * 0.5;
+double relative_wealth = agent.wealth / regional_avg_wealth;
+
+if (relative_wealth > 1.5) {
+    // Wealthy lean toward hierarchy/authority (personality-dependent)
+    double shift = wealth_influence * log(1 + relative_wealth) * 0.001;
+    B[0] += shift;  // Authority
+    B[2] += shift;  // Hierarchy
+}
+```
+
+**Hardship Effects (unchanged):**
 ```cpp
 if (agent_econ.hardship > 0.5) {
     B[0] -= 0.001 * hardship  // Authority → Liberty
@@ -220,20 +251,7 @@ if (agent_econ.hardship > 0.5) {
 }
 ```
 
-**Inequality Effects:**
-```cpp
-if (regional_inequality > 0.4) {
-    B[2] -= 0.001 * inequality  // Push toward equality
-}
-```
-
-**Wealth Effects:**
-```cpp
-if (agent_econ.wealth > 2.0) {
-    B[0] += 0.001 * wealth_factor  // Support authority
-    B[2] += 0.001 * wealth_factor  // Support hierarchy
-}
-```
+**Key Change:** No deterministic wealth→belief forcing. Open-minded wealthy agents can maintain egalitarian beliefs.
 
 ---
 
@@ -262,12 +280,22 @@ Five-good trade economy with dramatic regional specialization creating scarcity 
 - Simulates terrain features (fertile plains, mineral deposits, forests)
 - Creates resource "zones" across regions
 
-### Subsistence Requirements (per capita)
-- Food: 0.7
-- Energy: 0.35
-- Tools: 0.2
-- Services: 0.15
-- Luxury: 0.0 (optional)
+### Regional Subsistence Requirements
+
+Subsistence needs now vary by region based on geography and development:
+
+**Climate-Based Needs (per capita):**
+| Need | Cold Climate | Temperate | Hot Climate |
+|------|-------------|-----------|-------------|
+| Food | 0.9 | 0.7 | 0.6 |
+| Energy | 0.45 | 0.35 | 0.25 |
+
+**Development-Based Needs:**
+| Need | Low Development | High Development |
+|------|-----------------|------------------|
+| Tools | 0.15 | 0.25 |
+| Services | 0.10 | 0.20 |
+| Luxury | 0.0 | 0.15 |
 
 ### Production
 ```cpp
@@ -285,9 +313,11 @@ production[good] = endowment * population * specialization_bonus *
 
 ### Trade System
 
-**Trade Network:**
-- Each region trades with 5-10 neighbors (wrapping circular topology)
-- Distance-based transport costs: 2% per hop
+**Trade Network (Geography-Based):**
+- Partners determined by Euclidean distance from region coordinates (x, y)
+- Number of partners: `2 + development × 10 + random(0-3)` (range: 2-15)
+- Nearby regions prioritized over distant ones
+- Transport costs: 2% per hop
 
 **Trade Logic (per good, per tick):**
 1. Calculate surplus: `production - (population * subsistence)`
@@ -302,7 +332,9 @@ if (demand > supply):
 else:
     price *= (1 - PRICE_ADJUSTMENT_RATE * 0.5)
 ```
-Price range: 0.5x to 2.0x base price
+**Emergent Price Range:** 0.01-100.0 (only numerical stability limits)
+- Near-free goods attract demand surges
+- Hyperinflation triggers barter alternatives
 
 ### Specialization Evolution
 ```cpp
@@ -328,14 +360,22 @@ agent.income = (agent.productivity / region_total_productivity) *
                regional_production[agent.sector]
 ```
 
-**Economic Systems:**
-- **Mixed:** Default (most regions)
-- **Cooperative:** High equality beliefs + low inequality
-- **Market:** High liberty + low hardship
-- **Feudal:** High hierarchy + high inequality
-- **Planned:** High authority + high hardship
+**Economic Systems (Emergent Transitions):**
+- **Mixed:** Default starting state
+- **Cooperative:** Emerges from egalitarian beliefs + low actual inequality
+- **Market:** Emerges from liberty beliefs + low hardship conditions
+- **Feudal:** Emerges from hierarchy beliefs + high actual inequality
+- **Planned:** Emerges from authority beliefs + crisis conditions
 
-System-specific modifiers affect inequality and efficiency.
+**Transition Dynamics:**
+- Probabilistic transitions (0.2-5% per tick when conditions met)
+- Institutional inertia slows change
+- Crisis accelerates transitions
+- No instant system flips
+
+**Emergent Properties:**
+- Inequality computed from actual Gini coefficient (not system label)
+- Efficiency emerges from development + moderate inequality + coordination
 
 ### Metrics
 - **Welfare:** Weighted consumption satisfaction (0.0-2.0+)
@@ -345,12 +385,17 @@ System-specific modifiers affect inequality and efficiency.
 - **Development:** Cumulative surplus/tech advancement (0.0-1.0+)
 - **Trade Volume:** Total goods traded per tick
 
-**Typical Values @ 1000 ticks:**
-- Trade Volume: 23,000-25,000
-- Welfare: 0.9-1.0
-- Inequality: 0.25-0.35
-- Hardship: 0.06-0.08
-- Development: 0.1-0.2
+**Typical Values @ 500 ticks (Emergent Dynamics):**
+- Trade Volume: 250,000-300,000
+- Welfare: 1.3-1.7 (varies by region: 0.2-2.5)
+- Inequality: 0.30-0.45 (Kuznets curve: rises then falls)
+- Hardship: 0.4-0.7 (geographic variation: 0.0-1.0)
+- Development: 0.2-0.4
+
+**Regional Variation:**
+- Periphery regions: Higher hardship, lower welfare
+- Trade hubs: Lower hardship, higher welfare
+- Resource curse: Luxury regions can have high hardship
 
 ---
 
@@ -460,10 +505,28 @@ movement <ID>          # Detailed info for specific movement
 - `satisfaction`: Life contentment (0.0-1.0)
 - `trauma`: Long-term psychological impact
 
+### Stress Sensitivity (Personality-Based)
+Each agent has unique stress coefficients based on personality:
+
+```cpp
+struct StressSensitivity {
+    double economic;      // (1-openness) × (1+conformity) × 0.5
+    double media;         // conformity × (1+sociality) × 0.4
+    double institutional; // (1-assertiveness) × (1+conformity) × 0.4
+    double disease;       // (1-openness) × (1-assertiveness) × 0.3
+};
+```
+
+**Personality Effects:**
+- Open agents: More resilient to economic/disease stress
+- Conformist agents: More sensitive to media/institutional pressure
+- Assertive agents: More resilient to institutional stress
+- Range: 0.0-0.5 per factor (allows for resilient individuals)
+
 ### Influences
-- Economic hardship → stress
+- Economic hardship → stress (weighted by personality)
 - Belief conflict → stress
-- Social isolation → stress
+- Social isolation → stress (sociality-dependent)
 - Stress → susceptibility to radical beliefs
 
 ---
@@ -475,10 +538,24 @@ movement <ID>          # Detailed info for specific movement
 - `disease_exposure`: Infection risk
 - `immunity`: Resistance to disease
 
+### Adaptive Infection Pressure
+Infection weights vary by regional characteristics:
+
+**Urban Areas (high density):**
+- Sanitation weight: 0.3 + density × 0.1
+- Crowding weight: 0.1 + density × 0.15
+
+**Rural Areas (low density):**
+- Healthcare access weight: 0.25 + (1-density) × 0.1
+
+**Poor Regions:**
+- Hardship weight: 0.2 + hardship × 0.15
+
 ### Dynamics
 - Health affects productivity
 - Disease spreads through networks
 - Regional health infrastructure modulates outcomes
+- Development reduces baseline mortality rates
 
 ---
 
