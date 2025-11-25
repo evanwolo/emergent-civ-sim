@@ -33,6 +33,10 @@ struct AgentEconomy {
 struct RegionalEconomy {
     std::uint32_t region_id;
     
+    // Geographic coordinates (0.0 to 1.0 normalized)
+    double x = 0.0;  // west-east position
+    double y = 0.0;  // south-north position
+    
     // Endowments (base production capacity) - varies by geography
     std::array<double, kGoodTypes> endowments = {1.0, 1.0, 1.0, 0.5, 0.5};
     

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(GrandStrategySim VERSION 0.3.0 LANGUAGES CXX)
+project(CivilizationSim VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,7 +7,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # For IDE integration
 
 # Options
 option(BUILD_TESTS "Build test suite" ON)
-option(BUILD_LEGACY "Build legacy prototype" OFF)
+option(BUILD_GAME "Build game-specific modules" ON)
 option(ENABLE_OPENMP "Enable OpenMP parallelization" ON)
 
 # Compiler flags
@@ -32,8 +32,13 @@ if(ENABLE_OPENMP)
   endif()
 endif()
 
-# Core library
+# Core engine library (game-agnostic simulation)
 add_subdirectory(core)
+
+# Game-specific modules (movements, etc.)
+if(BUILD_GAME)
+  add_subdirectory(game)
+endif()
 
 # CLI executables
 add_subdirectory(cli)
@@ -42,9 +47,4 @@ add_subdirectory(cli)
 if(BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
-endif()
-
-# Legacy prototype
-if(BUILD_LEGACY)
-  add_subdirectory(legacy)
 endif()

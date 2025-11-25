@@ -54,13 +54,14 @@ void CohortDemographics::buildCohortsFromAgents(const std::vector<Agent>& agents
 }
 
 double CohortDemographics::computeMortalityRate(std::uint8_t age_group) const {
-    // U-shaped mortality: high infant mortality, low middle age, exponential increase after 50
-    // Base rates per tick (assume 10 ticks/year)
+    // EMERGENT MORTALITY: Base rate modified by regional factors during updateDemographics()
+    // This provides age-structured baseline; actual mortality varies by region health/welfare
     constexpr double TICK_SCALE = 0.1;  // 10 ticks/year
     
-    if (age_group == 0) return 0.008 * TICK_SCALE;      // 0-4: infant mortality
-    if (age_group <= 2) return 0.002 * TICK_SCALE;       // 5-14: low
-    if (age_group <= 9) return 0.003 * TICK_SCALE;       // 15-49: low
+    // Base mortality curve (will be modified by regional factors)
+    if (age_group == 0) return 0.008 * TICK_SCALE;      // 0-4: infant mortality (varies most by region)
+    if (age_group <= 2) return 0.002 * TICK_SCALE;       // 5-14: low base
+    if (age_group <= 9) return 0.003 * TICK_SCALE;       // 15-49: prime years
     if (age_group <= 13) return 0.008 * TICK_SCALE;      // 50-69: rising
     if (age_group <= 15) return 0.025 * TICK_SCALE;      // 70-79: significant
     if (age_group <= 16) return 0.060 * TICK_SCALE;      // 80-89: high
@@ -68,16 +69,21 @@ double CohortDemographics::computeMortalityRate(std::uint8_t age_group) const {
 }
 
 double CohortDemographics::computeFertilityRate(std::uint8_t age_group) const {
-    // Fertility concentrated in ages 15-45 (groups 3-8)
+    // EMERGENT FERTILITY: Base rate that varies by regional development/culture
+    // Developed regions: lower base fertility, later peak age
+    // Traditional regions: higher fertility, earlier peak
     constexpr double TICK_SCALE = 0.1;  // 10 ticks/year
-    constexpr double BASE_TFR = 2.5;    // Total fertility rate (children per woman)
-    constexpr double FERTILE_YEARS = 30.0;  // Reproductive window
+    
+    // Base TFR varies by development (set during cohort sync with economy)
+    // This is just the age distribution curve
+    constexpr double BASE_TFR = 2.5;    // Will be modified per-region
+    constexpr double FERTILE_YEARS = 30.0;
     constexpr double BIRTH_RATE = (BASE_TFR / FERTILE_YEARS) * TICK_SCALE;
     
-    if (age_group < 3 || age_group > 8) return 0.0;  // Not fertile age
+    if (age_group < 3 || age_group > 8) return 0.0;
     
-    // Peak fertility at 25-30 (group 5)
-    if (age_group == 5) return BIRTH_RATE * 1.2;
+    // Age-specific fertility rates (peak varies by region development)
+    if (age_group == 5) return BIRTH_RATE * 1.2;  // 25-30: peak
     if (age_group == 4 || age_group == 6) return BIRTH_RATE * 1.0;
     if (age_group == 3 || age_group == 7) return BIRTH_RATE * 0.7;
     if (age_group == 8) return BIRTH_RATE * 0.3;
@@ -124,9 +130,17 @@ void CohortDemographics::updateDemographics(std::uint64_t tick, int ticks_per_ye
     for (auto& [key, cohort] : cohorts_) {
         if (cohort.count == 0) continue;
         
-        // Mortality adjusted by health (lower health → higher mortality)
+        // EMERGENT MORTALITY: Base rate modified by multiple regional factors
         double health_factor = 0.5 + 0.5 * cohort.avg_health;  // [0.5, 1.0]
         double effective_mortality = cohort.mortality_rate / health_factor;
+        
+        // Regional development reduces mortality (better healthcare, sanitation)
+        // Infant mortality (age_group 0) is most affected by development
+        double development_modifier = 1.0 - (cohort.avg_nutrition * 0.3);  // nutrition proxy for development
+        if (key.age_group == 0) {
+            development_modifier = 1.0 - (cohort.avg_nutrition * 0.6);  // infants benefit most
+        }
+        effective_mortality *= std::max(0.3, development_modifier);
         
         // Infection increases mortality
         if (cohort.infected_share > 0.0) {
@@ -143,9 +157,29 @@ void CohortDemographics::updateDemographics(std::uint64_t tick, int ticks_per_ye
     for (const auto& [key, cohort] : cohorts_) {
         if (cohort.count == 0 || cohort.fertility_rate <= 0.0) continue;
         
-        // Fertility adjusted by nutrition and health
+        // EMERGENT FERTILITY: Multiple factors affect birth rates
         double nutrition_factor = 0.5 + 0.5 * cohort.avg_nutrition;
-        double effective_fertility = cohort.fertility_rate * nutrition_factor;
+        
+        // Demographic transition: higher development = lower fertility
+        // Well-nourished populations with high health have fewer children (quality over quantity)
+        double demographic_transition = 1.0 - (cohort.avg_health * 0.3);  // health proxy for development
+        
+        // Economic stress affects fertility (hardship reduces family planning)
+        // But extreme hardship also reduces fertility (survival mode)
+        double stress_factor = 1.0;
+        // (Note: would need access to regional hardship here for full implementation)
+        
+        double effective_fertility = cohort.fertility_rate * nutrition_factor * demographic_transition * stress_factor;
+        
+        // Age-group specific modifiers for peak shift
+        // In developed regions, fertility peaks later; in traditional regions, peaks earlier
+        // This is approximated by health/nutrition levels
+        if (key.age_group == 3 && cohort.avg_health > 0.7) {
+            effective_fertility *= 0.6;  // developed: delay early fertility
+        }
+        if (key.age_group == 6 && cohort.avg_health > 0.7) {
+            effective_fertility *= 1.2;  // developed: more late fertility
+        }
         
         std::uint32_t num_births = randomBinomial(cohort.count, effective_fertility);
         

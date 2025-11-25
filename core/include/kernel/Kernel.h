@@ -9,7 +9,6 @@
 #include "modules/Economy.h"
 #include "modules/Psychology.h"
 #include "modules/Health.h"
-#include "modules/Movement.h"
 #include "modules/MeanField.h"
 #include "utils/EventLog.h"
 
@@ -48,9 +47,12 @@ struct Agent {
     std::int32_t parent_b = -1;
     std::uint32_t lineage_id = 0;
     
-    // Language (primary for kernel; extend to repertoire in Phase 2)
-    std::uint8_t primaryLang = 0;
-    double fluency = 1.0;  // 0..1
+    // Language: family (0-3) + dialect (0-255 for regional variation)
+    // Language families represent major language groups
+    // Dialects encode regional variation within a family
+    std::uint8_t primaryLang = 0;    // language family (0-3)
+    std::uint8_t dialect = 0;         // regional dialect within family
+    double fluency = 1.0;             // 0..1
     
     // Personality traits (0..1, mean ~0.5)
     double openness = 0.5;
@@ -94,10 +96,6 @@ public:
     // Economy access
     const Economy& economy() const { return economy_; }
     Economy& economyMut() { return economy_; }
-    
-    // Movement access
-    const MovementModule& movements() const { return movements_; }
-    MovementModule& movementsMut() { return movements_; }
     
     // Event log access
     EventLog& eventLog() { return event_log_; }
@@ -181,6 +179,9 @@ private:
     double fertilityPerTick(int age) const;
     double fertilityPerTick(int age, std::uint32_t region_id, const Agent& agent,
                            const std::array<double, 4>& region_beliefs) const;  // Region and agent-specific fertility
+    
+    // Language assignment based on region geography
+    void assignLanguagesByGeography();
 
     KernelConfig cfg_;
     std::vector<Agent> agents_;
@@ -190,7 +191,6 @@ private:
     Economy economy_;  // Economic module
     PsychologyModule psychology_;
     HealthModule health_;
-    MovementModule movements_;  // Movement module
     MeanFieldApproximation mean_field_;  // Mean field approximation
     EventLog event_log_;  // Event tracking system
 
