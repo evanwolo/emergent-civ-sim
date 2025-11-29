@@ -18,10 +18,12 @@ enable_testing()
 
 # Kernel tests
 add_executable(kernel_tests kernel_tests.cpp)
-target_link_libraries(kernel_tests PRIVATE grandstrategy GTest::gtest_main)
+target_link_libraries(kernel_tests PRIVATE civilizationengine GTest::gtest_main)
+target_include_directories(kernel_tests PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
 add_test(NAME KernelTests COMMAND kernel_tests)
 
 # Economy tests
 add_executable(economy_tests economy_tests.cpp)
-target_link_libraries(economy_tests PRIVATE grandstrategy GTest::gtest_main)
+target_link_libraries(economy_tests PRIVATE civilizationengine GTest::gtest_main)
+target_include_directories(economy_tests PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
 add_test(NAME EconomyTests COMMAND economy_tests)

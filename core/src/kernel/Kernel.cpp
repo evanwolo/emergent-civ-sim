@@ -942,15 +942,19 @@ void Kernel::stepDemography() {
         //         generation_, birth_count, death_count, agents_.size());
     }
     
-    // More aggressive dead agent compaction (every 25 ticks instead of 100)
-    // Reduces cache pollution from dead agents
-    if (generation_ % 25 == 0) {
+    // Aggressive dead agent compaction (every 5 ticks)
+    // Reduces cache pollution and wasted iteration over zombie agents
+    // Trade-off: more frequent compaction vs. less iteration overhead
+    if (generation_ % 5 == 0) {
         compactDeadAgents();
     }
 }
 
 void Kernel::createChild(std::uint32_t motherId) {
     if (motherId >= agents_.size()) return;
+    
+    // Safety check: enforce max population limit
+    if (agents_.size() >= cfg_.maxPopulation) return;
     
     Agent& mother = agents_[motherId];
     if (!mother.alive) return;
@@ -1106,9 +1110,9 @@ void Kernel::stepMigration() {
     // Migration decisions: young adults with high hardship + high mobility move to better regions
     // This creates rural→urban, periphery→core flows
     
-    // Update attractiveness periodically (not every migration tick)
-    // This avoids recomputing attractiveness for each migrant
-    if (generation_ > attractiveness_update_gen_ + 50 || attractiveness_update_gen_ == 0) {
+    // Update attractiveness more frequently (every 10 ticks, or immediately after reset)
+    // More responsive to rapid changes in regional conditions (crises, booms)
+    if (generation_ > attractiveness_update_gen_ + 10 || attractiveness_update_gen_ == 0) {
         attractiveness_update_gen_ = generation_;
         
         for (std::size_t r = 0; r < cfg_.regions; ++r) {
@@ -1217,6 +1221,9 @@ void Kernel::stepMigration() {
                 
                 // Update regional aggregates incrementally
                 onAgentMigrated(agent_id, origin, destination);
+                
+                // Update economic sector for migrant (productivity hit, potential sector shift)
+                economy_.migrateAgent(agent_id, origin, destination);
                 
                 // Log migration event
                 event_log_.logMigration(generation_, agent_id, origin, destination);

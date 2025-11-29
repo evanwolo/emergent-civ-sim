@@ -17,7 +17,13 @@ void MovementModule::update(Kernel& kernel, const std::vector<Cluster>& clusters
 
 // Formation detection from clusters
 void MovementModule::detectFormations(Kernel& kernel, const std::vector<Cluster>& clusters, std::uint64_t tick) {
+    // Capacity check: prevent unbounded movement growth
+    if (movements_.size() >= cfg_.maxActiveMovements) {
+        return;  // At capacity, no new formations until some die
+    }
+    
     for (const auto& cluster : clusters) {
+        if (movements_.size() >= cfg_.maxActiveMovements) break;  // Stop if we hit cap during iteration
         if (shouldFormMovement(cluster, kernel)) {
             movements_.push_back(createMovement(cluster, kernel, tick));
         }
@@ -197,7 +203,8 @@ void MovementModule::updatePowerMetrics(Movement& mov, const Kernel& kernel) {
         double hardship = (agentId < ecoAgents.size()) ? ecoAgents[agentId].hardship : 0.0;
         streetPower += assertiveness * (1.0 + hardship);
     }
-    mov.streetCapacity = streetPower / (mov.members.size() + 1.0);
+    // Average street power per member (not n+1 which penalizes small movements)
+    mov.streetCapacity = mov.members.empty() ? 0.0 : streetPower / mov.members.size();
     
     // Charisma score: average assertiveness of leaders
     double charismaSum = 0.0;

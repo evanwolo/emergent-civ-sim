@@ -482,7 +482,15 @@ void Economy::computeTrade() {
         }
     }
     
-    if (!trade_network_) return;
+    if (!trade_network_) {
+        // Trade network should always be initialized - this indicates a bug
+        static bool warned = false;
+        if (!warned) {
+            std::cerr << "WARNING: Trade network not initialized, skipping trade computation\n";
+            warned = true;
+        }
+        return;
+    }
     
     // Build production and demand vectors
     std::vector<std::array<double, kGoodTypes>> production(regions_.size());
@@ -619,7 +627,7 @@ void Economy::distributeIncome(const std::vector<Agent>& agents,
                 
                 // Agent income = (their productivity / total productivity) × regional production in their sector
                 double sector_production = region.production[agent.sector];
-                double income_share = agent.productivity / region_total_productivity;
+                double income_share = agent.productivity / std::max(0.001, region_total_productivity);
                 double base_income = sector_production * income_share * region.prices[agent.sector];
                 
                 // Regional efficiency effect (apply BEFORE consumption decisions)
@@ -1481,6 +1489,48 @@ void Economy::addAgent(std::uint32_t agent_id, std::uint32_t region_id, std::mt1
     agent.productivity = 1.0;
     agent.sector = sector_dist(rng);
     agent.hardship = 0.0;
+}
+
+void Economy::migrateAgent(std::uint32_t agent_id, std::uint32_t from_region, std::uint32_t to_region) {
+    // Update agent's economic sector when they migrate between regions
+    // Migrants often shift to sectors that are in demand in their new region
+    
+    if (agent_id >= agents_.size()) return;
+    if (to_region >= regions_.size()) return;
+    
+    AgentEconomy& agent = agents_[agent_id];
+    const RegionalEconomy& dest_region = regions_[to_region];
+    
+    // Migration economic impact:
+    // 1. Productivity temporarily drops (adaptation period)
+    agent.productivity *= 0.8;  // 20% productivity hit from relocation
+    
+    // 2. Consider sector shift if destination has different specializations
+    // Find the most demanded good in destination region
+    int best_sector = agent.sector;
+    double best_demand = 0.0;
+    for (int g = 0; g < kGoodTypes; ++g) {
+        // Demand = consumption - production (unmet need)
+        double unmet = dest_region.consumption[g] - dest_region.production[g];
+        if (unmet > best_demand) {
+            best_demand = unmet;
+            best_sector = g;
+        }
+    }
+    
+    // 30% chance to shift to highest-demand sector (entrepreneurial migrants)
+    // This creates realistic sector rebalancing from migration
+    if (best_sector != agent.sector && best_demand > 0) {
+        // Higher chance if current sector is oversupplied in destination
+        double current_surplus = dest_region.production[agent.sector] - dest_region.consumption[agent.sector];
+        if (current_surplus > 0) {
+            agent.sector = best_sector;
+            agent.productivity *= 0.9;  // Additional learning curve for sector switch
+        }
+    }
+    
+    // 3. Wealth takes a hit from moving costs (5-15% based on distance)
+    agent.wealth *= 0.9;  // Flat 10% moving cost for now
 }
 
 double Economy::globalWelfare() const {

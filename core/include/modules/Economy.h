@@ -135,6 +135,9 @@ public:
     // Add a new agent to the economy (for births)
     void addAgent(std::uint32_t agent_id, std::uint32_t region_id, std::mt19937_64& rng);
     
+    // Update agent's economic sector when they migrate between regions
+    void migrateAgent(std::uint32_t agent_id, std::uint32_t from_region, std::uint32_t to_region);
+    
     // Global metrics
     double globalWelfare() const;
     double globalInequality() const;

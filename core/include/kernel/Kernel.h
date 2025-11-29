@@ -67,6 +67,7 @@ struct KernelConfig {
     int maxAgeYears = 90;               // hard cap on lifespan
     double regionCapacity = 500.0;      // target population per region
     bool demographyEnabled = true;      // enable births/deaths
+    std::uint32_t maxPopulation = 2000000; // hard cap on total population (safety limit)
 };
 
 // ---------- Agent Structure ----------

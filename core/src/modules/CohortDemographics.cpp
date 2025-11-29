@@ -11,8 +11,10 @@ void CohortDemographics::configure(std::uint32_t num_regions, std::uint64_t seed
 }
 
 std::uint8_t CohortDemographics::ageToGroup(int age) const {
-    // 5-year buckets: [0-4], [5-9], ..., [85-89], [90+]
-    if (age >= 90) return 17;
+    // 5-year buckets: [0-4], [5-9], ..., [80-84], [85+]
+    // Group 17 (index 17) is the catch-all for ages 85 and above
+    // This gives 18 groups total (0-17)
+    if (age >= 85) return 17;
     return static_cast<std::uint8_t>(age / 5);
 }
 

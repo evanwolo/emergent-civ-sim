@@ -63,6 +63,9 @@ struct MovementFormationConfig {
     // Economic triggers
     double hardshipThreshold = 0.4;      // Lowered from 0.5
     double inequalityThreshold = 0.5;    // Lowered from 0.6
+    
+    // Capacity limits to prevent unbounded growth
+    std::uint32_t maxActiveMovements = 100;  // Cap on concurrent active movements
 };
 
 // Movement module
