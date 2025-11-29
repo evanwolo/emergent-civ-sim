@@ -1,6 +1,6 @@
-# Grand Strategy Game Design
+# Emergent Civilization Simulation - Design Document
 
-A nation-scale grand strategy game where societies evolve bottom-up from millions of agents; high-level structures—cultures, movements, institutions, ideologies, media regimes, tech regimes, and wars—emerge, compete, ossify, collapse, and reform over centuries without scripts.
+A large-scale agent-based simulation where societies evolve bottom-up from millions of agents; high-level structures—cultures, movements, institutions, ideologies, media regimes, tech regimes, and wars—emerge, compete, ossify, collapse, and reform over centuries without scripts.
 
 ## Table of Contents
 

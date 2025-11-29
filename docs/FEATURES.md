@@ -1,6 +1,6 @@
 # Feature Documentation
 
-Comprehensive guide to all implemented systems in the Grand Strategy Simulation Engine.
+Comprehensive guide to all implemented systems in the Emergent Civilization Simulation Engine.
 
 ---
 
@@ -13,7 +13,8 @@ Comprehensive guide to all implemented systems in the Grand Strategy Simulation 
 6. [Movements](#movements)
 7. [Psychology Module](#psychology-module)
 8. [Health Module](#health-module)
-9. [Configuration](#configuration)
+9. [Tuning Constants](#tuning-constants)
+10. [Configuration](#configuration)
 
 ---
 
@@ -86,6 +87,7 @@ struct KernelConfig {
     int maxAgeYears = 90;           // Maximum lifespan
     double regionCapacity = 500.0;  // Target population per region
     bool demographyEnabled = true;  // Enable births/deaths
+    uint32_t maxPopulation = 2000000; // Safety cap on total population
 };
 ```
 
@@ -599,7 +601,8 @@ struct KernelConfig {
 - `simFloor`: Higher = stronger echo chambers
 
 **Demographics:**
-- `regionCapacity`: Lower = more migration pressure (future)
+- `regionCapacity`: Lower = more migration pressure
+- `maxPopulation`: Hard cap to prevent unbounded growth
 - `ticksPerYear`: Lower = faster aging, higher time resolution
 
 **Network:**
@@ -608,32 +611,80 @@ struct KernelConfig {
 
 ---
 
+## Tuning Constants
+
+The `TuningConstants` namespace in `Kernel.h` provides centralized control over emergent behavior dynamics:
+
+### Belief Dynamics
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `kHomophilyExponent` | 2.5 | Exponential homophily strength |
+| `kHomophilyMinWeight` | 0.1 | Minimum neighbor influence weight |
+| `kHomophilyMaxWeight` | 10.0 | Maximum neighbor influence weight |
+| `kLanguageBonusMultiplier` | 1.5 | Shared language influence bonus |
+| `kInnovationNoise` | 0.03 | Belief innovation std dev |
+
+### Belief Anchoring
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `kAnchoringMaxAge` | 50.0 | Age at which anchoring maxes out |
+| `kAnchoringBase` | 0.3 | Minimum anchoring (young agents) |
+| `kAnchoringAgeWeight` | 0.4 | Age contribution to anchoring |
+| `kAnchoringAssertWeight` | 0.2 | Assertiveness contribution |
+
+### Network Dynamics
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `kReconnectInterval` | 5 | Ticks between reconnection passes |
+| `kReconnectCapFraction` | 0.02 | Max fraction reconnected per tick |
+| `kNeighborWeightMin` | 0.5 | Min neighbor vs regional influence |
+| `kNeighborWeightMax` | 0.85 | Max neighbor vs regional influence |
+
+### Migration
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `kHardshipPushWeight` | 2.0 | Hardship contribution to push |
+| `kCrowdingPenaltyWeight` | 0.5 | Over-capacity crowding penalty |
+
+### Economic Pressure
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `kBasePressureMultiplier` | 0.05 | Base pressure from economy |
+| `kHardshipThreshold` | 0.3 | Hardship triggering belief response |
+| `kWelfareThreshold` | 0.5 | Welfare triggering openness response |
+
+---
+
 ## Performance Characteristics
 
 ### Computational Complexity
-- **Belief Update:** O(N×k) per tick (N agents, k neighbors)
-- **Economy Update:** O(R×G×T) every 10 ticks (R regions, G goods, T trade partners)
-- **Clustering:** O(N×K×I) on demand (K clusters, I iterations)
-- **Demographics:** O(N) per tick with compaction every 100 ticks
+- **Belief Update:** O(N) with mean field (O(N×k) without)
+- **Economy Update:** O(R²) matrix trade every 10 ticks
+- **Clustering:** O(1) per agent with online K-means
+- **Demographics:** O(C) cohort-based (C << N)
 
 ### Memory Footprint
 - Agent: ~200 bytes each
 - 50k agents: ~10 MB
 - Economy data: ~5 MB
 - Networks: ~3 MB
+- Trade Laplacian: ~320 KB (200 regions)
+- Cohorts: ~4 KB
 - **Total:** ~20 MB active data
 
 ### Parallelization
-- OpenMP for belief updates (thread-safe parallel loops)
+- OpenMP for belief updates (thread-safe two-phase pattern)
 - SIMD-friendly tanh approximation
 - Minimal synchronization points
 
 ### Optimization Strategies
-1. **Cached Norms:** Pre-compute B_norm_sq for similarity
-2. **Sparse Networks:** Neighbor lists, not adjacency matrix
-3. **Batch Processing:** Economy every 10 ticks, demographics every tick
-4. **Incremental Cleanup:** Dead agents removed every 100 ticks
-5. **Skip Dead:** O(1) alive check before processing
+1. **Mean Field:** O(N) instead of O(N×k) for belief updates
+2. **Cohort Demographics:** O(C) instead of O(N) for births/deaths
+3. **Matrix Trade:** Laplacian diffusion replaces pairwise loops
+4. **Online Clustering:** Incremental updates, no batch spikes
+5. **Cached Norms:** Pre-compute B_norm_sq for similarity
+6. **Sparse Networks:** Neighbor lists, not adjacency matrix
+7. **Incremental Cleanup:** Dead agents compacted every 5 ticks
 
 ---
 
@@ -691,4 +742,4 @@ struct KernelConfig {
 
 ---
 
-*Last Updated: Phase 2.3+ (November 2025)*
+*Last Updated: Phase 2.5 (November 2025)*

@@ -180,6 +180,7 @@ struct KernelConfig {
     int maxAgeYears = 90;             // Hard age cap
     double regionCapacity = 500.0;    // Target population/region
     bool demographyEnabled = true;    // Enable births/deaths
+    uint32_t maxPopulation = 2000000; // Safety cap on total population
     
     // Initialization
     uint64_t seed = 42;               // RNG seed
@@ -187,7 +188,56 @@ struct KernelConfig {
 };
 ```
 
+### TuningConstants
+
+The `TuningConstants` namespace provides centralized control over emergent behavior dynamics. All constants are `constexpr` and located in `Kernel.h`.
+
+```cpp
+namespace TuningConstants {
+    // Belief Dynamics
+    constexpr double kHomophilyExponent = 2.5;       // exp(sim * this)
+    constexpr double kHomophilyMinWeight = 0.1;      // Minimum neighbor weight
+    constexpr double kHomophilyMaxWeight = 10.0;     // Maximum neighbor weight
+    constexpr double kLanguageBonusMultiplier = 1.5; // Shared language bonus
+    constexpr double kInnovationNoise = 0.03;        // Belief drift std dev
+    
+    // Belief Anchoring (resistance to change)
+    constexpr double kAnchoringMaxAge = 50.0;        // Full anchoring age
+    constexpr double kAnchoringBase = 0.3;           // Young agent anchoring
+    constexpr double kAnchoringAgeWeight = 0.4;      // Age → anchoring
+    constexpr double kAnchoringAssertWeight = 0.2;   // Assertiveness → anchoring
+    
+    // Network Dynamics
+    constexpr int kReconnectInterval = 5;            // Ticks between reconnects
+    constexpr double kReconnectCapFraction = 0.02;   // Max reconnect fraction
+    constexpr double kNeighborWeightMin = 0.5;       // Min neighbor influence
+    constexpr double kNeighborWeightMax = 0.85;      // Max neighbor influence
+    
+    // Migration
+    constexpr double kHardshipPushWeight = 2.0;      // Hardship push factor
+    constexpr double kCrowdingPenaltyWeight = 0.5;   // Overcrowding penalty
+    
+    // Economic Pressure → Beliefs
+    constexpr double kBasePressureMultiplier = 0.05; // Base economic pressure
+    constexpr double kHardshipThreshold = 0.3;       // Hardship belief trigger
+    constexpr double kWelfareThreshold = 0.5;        // Welfare openness trigger
+}
+```
+
+**Usage:**
+```cpp
+// Access constants directly
+double weight = TuningConstants::kHomophilyExponent;
+
+// Constants affect simulation behavior
+// - Higher kHomophilyExponent → stronger echo chambers
+// - Higher kAnchoringBase → more belief stability
+// - Higher kReconnectInterval → slower network repair
+```
+
 #### Configuration Validation
+
+The kernel validates configuration on construction:
 
 The kernel validates configuration on construction:
 
@@ -252,6 +302,7 @@ public:
     
     // Agent Lifecycle
     void addAgent(uint32_t agent_id, uint32_t region_id, mt19937_64& rng);
+    void migrateAgent(uint32_t agent_id, uint32_t from_region, uint32_t to_region);
     
     // Global Metrics
     double globalWelfare() const;
@@ -264,6 +315,11 @@ public:
     double getTotalTrade() const;
 };
 ```
+
+**migrateAgent()**: Updates economic state when an agent migrates between regions:
+- 20% productivity penalty (adaptation to new market)
+- 10% chance of sector shift based on destination region
+- 10% wealth hit from moving costs
 
 #### RegionalEconomy Structure
 
@@ -753,8 +809,9 @@ int main() {
 
 ## Version History
 
-- **v0.4.0**: Current version with demographics, migration, language dynamics
-- **v0.3.0**: Added mean-field approximation, incremental aggregates
+- **v0.5.0** (Phase 2.5): TuningConstants namespace, robustness fixes, Economy::migrateAgent
+- **v0.4.0**: Demographics, migration, language dynamics
+- **v0.3.0**: Mean-field approximation, incremental aggregates
 - **v0.2.0**: Economy module with trade network
 - **v0.1.0**: Initial belief dynamics and network topology
 

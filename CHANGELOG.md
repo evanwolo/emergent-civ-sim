@@ -1,5 +1,65 @@
 # Changelog
 
+## Phase 2.5 - Code Quality & Robustness (November 2025)
+
+### Code Review Fixes
+Comprehensive code review identified and resolved multiple issues across the codebase.
+
+#### Tuning Constants Namespace
+- **New**: `TuningConstants` namespace centralizes 20+ magic numbers
+- **Location**: `core/include/kernel/Kernel.h`
+- **Constants**: Homophily, anchoring, network dynamics, migration, economic pressure
+- **Benefit**: Single source of truth for emergent behavior tuning
+
+#### Thread Safety Improvements
+- **Verification**: Confirmed two-phase belief update pattern is thread-safe
+- **Documentation**: Added thread safety comments explaining parallel loop patterns
+- **Pattern**: Phase 1 (read-only parallel) → Phase 2 (write parallel, no cross-agent access)
+
+#### Zombie Agent Prevention
+- **Fix**: Reduced dead agent compaction interval from 25 to 5 ticks
+- **Benefit**: Prevents stale `alive=false` agents from accumulating
+- **Impact**: Faster memory reclamation, reduced iteration waste
+
+#### Migration Responsiveness
+- **Fix**: Reduced attractiveness update interval from 50 to 10 ticks
+- **Benefit**: Migration responds faster to changing regional conditions
+- **Impact**: More realistic population movement patterns
+
+#### Movement Capacity Limits
+- **New**: `maxActiveMovements = 100` config option in `Movement.h`
+- **Fix**: Check added in `detectFormations()` to prevent unbounded movement creation
+- **Benefit**: Prevents resource exhaustion in volatile simulations
+
+#### Economy Migration Support
+- **New**: `Economy::migrateAgent(agent_id, from_region, to_region)`
+- **Effects**: 20% productivity penalty, 10% sector shift chance, 10% wealth hit
+- **Benefit**: Migration now properly updates economic state
+
+#### Division-by-Zero Protection
+- **Fix**: Added `std::max(1, denominator)` guards in income distribution
+- **Location**: `Economy.cpp` income calculation
+- **Benefit**: Prevents NaN/Inf in edge cases with empty sectors
+
+#### Population Cap
+- **New**: `maxPopulation = 2000000` config option
+- **Location**: `KernelConfig` in `Kernel.h`
+- **Fix**: Birth prevention when population exceeds cap
+- **Benefit**: Prevents unbounded memory growth in high-fertility scenarios
+
+#### Age Group Boundary Fix
+- **Fix**: Agents 85+ now correctly placed in age group 17 (not 18)
+- **Location**: `CohortDemographics.cpp`
+- **Benefit**: Accurate demographic bucketing for elderly population
+
+### Test Suite Updates
+- Fixed `tests/CMakeLists.txt` library linking (`grandstrategy` → `civilizationengine`)
+- Updated `economy_tests.cpp` to use current Economy API
+- Updated `kernel_tests.cpp` to reflect intentional stochasticity
+- All tests now pass (100%)
+
+---
+
 ## Phase 2.4 - Radical Efficiency Improvements (November 2025)
 
 ### Major Architectural Changes

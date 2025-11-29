@@ -28,6 +28,8 @@ Application-specific modules that build on the core engine:
 - Regional subsistence needs vary by climate/development
 - Stress sensitivity varies by personality traits
 - Demographic rates modified by regional development
+- Leadership emerges from natural trait variation (no pre-selection)
+- Migration thresholds vary by personality (openness-dependent)
 
 See [docs/EMERGENT-SYSTEMS.md](docs/EMERGENT-SYSTEMS.md) for technical details.
 
@@ -144,14 +146,27 @@ Each agent has:
 struct KernelConfig {
     uint32_t population = 50000;
     uint32_t regions = 200;
-    uint32_t avgConnections = 8;    // Network degree
-    double rewireProb = 0.05;       // Small-world rewiring
+    uint32_t avgConnections = 8;    // Network degree (Watts-Strogatz k)
+    double rewireProb = 0.05;       // Small-world rewiring probability
     double stepSize = 0.15;         // Belief update rate
+    double simFloor = 0.05;         // Minimum similarity gate
     bool useMeanField = true;       // Use O(N) approximation
     bool demographyEnabled = true;  // Enable births/deaths
     int ticksPerYear = 10;          // Age granularity
+    int maxAgeYears = 90;           // Hard cap on lifespan
+    double regionCapacity = 500.0;  // Target population per region
+    uint32_t maxPopulation = 2000000; // Safety cap on total population
+    std::string startCondition = "baseline"; // Economic profile
 };
 ```
+
+### Tuning Constants
+
+Behavior dynamics are controlled via `TuningConstants` namespace in `Kernel.h`:
+- **Belief dynamics**: Homophily strength, innovation noise, anchoring
+- **Network**: Reconnection interval, neighbor influence weights
+- **Migration**: Hardship push weight, crowding penalty
+- **Economics**: Pressure multipliers, threshold values
 
 ---
 
@@ -159,7 +174,8 @@ struct KernelConfig {
 
 - **[docs/DESIGN.md](docs/DESIGN.md)** - System architecture and module specifications
 - **[docs/FEATURES.md](docs/FEATURES.md)** - Detailed feature documentation
-- **[docs/EMERGENT-SYSTEMS.md](docs/EMERGENT-SYSTEMS.md)** - Emergent dynamics refactoring (18 fixes)
+- **[docs/API.md](docs/API.md)** - Complete API reference
+- **[docs/EMERGENT-SYSTEMS.md](docs/EMERGENT-SYSTEMS.md)** - Emergent dynamics design (18 hardcoded behaviors replaced)
 - **[docs/OPTIMIZATION-GUIDE.md](docs/OPTIMIZATION-GUIDE.md)** - Performance optimization techniques
 - **[docs/DOCKER.md](docs/DOCKER.md)** - Container deployment guide
 - **[CHANGELOG.md](CHANGELOG.md)** - Version history
