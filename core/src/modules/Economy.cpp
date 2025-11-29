@@ -214,8 +214,8 @@ void Economy::computeInequality(const std::vector<Agent>& agents,
     for (std::size_t i = 0; i < regions_.size(); ++i) {
         if (regions_[i].population == 0) {
             regions_[i].inequality = 0.0;
-            continue;
-        }
+                    if (aid < agents.size()) {
+                        wealths.push_back(agents[aid].wealth);
         
         // Compute Gini from agent wealth distribution - this is the TRUE inequality
         // Use region_index if available for faster lookup
@@ -569,17 +569,17 @@ void Economy::distributeIncome(const std::vector<Agent>& agents,
     // Distribute income to agents based on productivity and regional economy
     // This creates wealth inequality over time
     
-    if (agents_.empty()) return;
-    
-    // If we have region_index, use cache-friendly region-batched processing
-    // Otherwise fall back to O(N) passes
-    if (region_index && region_index->size() == regions_.size()) {
-        // OPTIMIZED PATH: Process by region (cache-friendly, fewer passes)
-        for (std::size_t r = 0; r < regions_.size(); ++r) {
-            auto& region = regions_[r];
-            const auto& agent_ids = (*region_index)[r];
+                if (agent_id < agents.size()) {
+                    region_total_productivity += agents[agent_id].productivity;
+                }
+            }
             
-            if (agent_ids.empty()) continue;
+            if (region_total_productivity == 0.0) {
+                // All agents in region have zero productivity
+                for (auto agent_id : agent_ids) {
+                    if (agent_id < agents.size()) {
+                        agents[agent_id].income = 0.0;
+                        agents[agent_id].hardship = 1.0;
             
             // Compute total productivity for this region (one pass over region's agents)
             double region_total_productivity = 0.0;
@@ -619,40 +619,71 @@ void Economy::distributeIncome(const std::vector<Agent>& agents,
                 // Agent income = (their productivity / total productivity) × regional production in their sector
                 double sector_production = region.production[agent.sector];
                 double income_share = agent.productivity / region_total_productivity;
-                agent.income = sector_production * income_share * region.prices[agent.sector];
+                double base_income = sector_production * income_share * region.prices[agent.sector];
                 
-                // Consumption (agents must spend to maintain wealth)
-                double consumption = std::min(agent.wealth, agent.income * 0.8);
-                agent.wealth -= consumption;
-                
-                // Wealth accumulation from savings
-                agent.wealth += agent.income * 0.2;
-                agent.wealth = std::max(0.0, agent.wealth);
-                
-                // Wealth begets wealth (capital returns)
-                double wealth_return = std::log1p(agent.wealth) * 0.01;
-                agent.income += wealth_return;
-                
-                // Productivity compounds slowly
-                if (agent.productivity < 3.0) {
-                    agent.productivity *= (1.0 + 0.0005 * agent.productivity);
-                }
-                
-                // Regional efficiency effect
+                // Regional efficiency effect (apply BEFORE consumption decisions)
                 double regional_multiplier = 0.8 + region.efficiency * 0.4;
-                agent.income *= regional_multiplier;
+                base_income *= regional_multiplier;
+                
+                // Wealth begets wealth (capital returns on existing wealth)
+                double wealth_return = std::log1p(agent.wealth) * 0.01;
+                base_income += wealth_return;
                 
                 // Competition/position effect
                 double relative_position = agent.wealth / std::max(0.1, regional_avg_wealth);
                 if (relative_position > 2.0) {
-                    agent.income *= 1.0 + 0.1 * std::min(1.0, (relative_position - 2.0));
+                    base_income *= 1.0 + 0.1 * std::min(1.0, (relative_position - 2.0));
                 } else if (relative_position < 0.5) {
-                    agent.income *= 0.9 + 0.2 * relative_position;
+                    base_income *= 0.9 + 0.2 * relative_position;
                 }
                 
-                // Compute agent hardship
-                double consumption_capacity = agent.income / region.prices[FOOD];
+                agent.income = base_income;
+                
+                // REALISTIC CONSUMPTION MODEL:
+                // Budget constraint: consume from income, optionally dip into savings
+                double subsistence_cost = region.prices[FOOD] * 0.7 + 
+                                         region.prices[ENERGY] * 0.35 + 
+                                         region.prices[SERVICES] * 0.15;
+                
+                double consumption, savings;
+                if (base_income >= subsistence_cost * 1.2) {
+                    // Comfortable: save 20% of income
+                    consumption = base_income * 0.8;
+                    savings = base_income * 0.2;
+                } else if (base_income >= subsistence_cost) {
+                    // Paycheck-to-paycheck: small savings
+                    double surplus = base_income - subsistence_cost;
+                    savings = surplus * 0.5;  // Save half of surplus
+                    consumption = base_income - savings;
+                } else {
+                    // Poverty: consume all income, may dip into wealth for basics
+                    consumption = base_income;
+                    savings = 0.0;
+                    // Can draw from wealth for necessities (up to 5% per tick)
+                    double deficit = (subsistence_cost - base_income) * 0.5;  // Only cover half the gap
+                    double wealth_draw = std::min(deficit, agent.wealth * 0.05);
+                    agent.wealth -= wealth_draw;
+                    consumption += wealth_draw;  // This spending helps reduce hardship
+                }
+                agent.wealth = std::max(0.01, agent.wealth + savings);  // Small floor prevents 0
+                
+                // Productivity evolution with realistic dynamics
+                // Growth when young/learning, decay when skills become obsolete
+                if (agent.productivity < 3.0) {
+                    // Slow growth (learning by doing)
+                    double growth_rate = 0.0003 * (1.0 + regional_avg_wealth * 0.1);  // Better regions = faster learning
+                    agent.productivity *= (1.0 + growth_rate);
+                }
+                // Skill depreciation (technology changes, aging)
+                agent.productivity *= 0.9999;  // ~1% decay per 100 ticks
+                agent.productivity = std::max(0.2, agent.productivity);  // Floor
+                
+                // Compute agent hardship based on essential goods affordability
+                double essential_cost = region.prices[FOOD] * 0.7 + 
+                                       region.prices[ENERGY] * 0.35;
+                double consumption_capacity = agent.income / essential_cost;
                 agent.hardship = (consumption_capacity < 1.0) ? (1.0 - consumption_capacity) : 0.0;
+                agent.hardship = std::clamp(agent.hardship, 0.0, 1.0);
             }
             
             // Update regional wealth distribution metrics (one pass over region)
@@ -687,7 +718,7 @@ void Economy::distributeIncome(const std::vector<Agent>& agents,
             
             if (region_id >= regions_.size()) {
                 throw std::runtime_error("Invalid agent.region in distributeIncome: " + 
-                                       std::to_string(region_id) + 
+                ? (std::accumulate(region.production.begin(), region.production.end(), 0.0) / region.population) : 1.0;
                                        " (must be < " + std::to_string(regions_.size()) + ")");
             }
             
@@ -715,36 +746,74 @@ void Economy::distributeIncome(const std::vector<Agent>& agents,
             
             double sector_production = region.production[agent.sector];
             double income_share = agent.productivity / region_total_productivity[region_id];
-            agent.income = sector_production * income_share * region.prices[agent.sector];
+            double base_income = sector_production * income_share * region.prices[agent.sector];
             
-            double consumption = std::min(agent.wealth, agent.income * 0.8);
-            agent.wealth -= consumption;
-            agent.wealth += agent.income * 0.2;
-            agent.wealth = std::max(0.0, agent.wealth);
-            
-            double wealth_return = std::log1p(agent.wealth) * 0.01;
-            agent.income += wealth_return;
-            
-            if (agent.productivity < 3.0) {
-                agent.productivity *= (1.0 + 0.0005 * agent.productivity);
-            }
-            
+            // Regional efficiency (apply before consumption)
             double regional_multiplier = 0.8 + region.efficiency * 0.4;
-            agent.income *= regional_multiplier;
+            base_income *= regional_multiplier;
             
+            // Wealth returns
+            double wealth_return = std::log1p(agent.wealth) * 0.01;
+            base_income += wealth_return;
+            
+            // Regional avg wealth (use total production for consistency with optimized path)
+            double total_sector_production = 0.0;
+            for (int g = 0; g < kGoodTypes; ++g) {
+                total_sector_production += region.production[g];
+            }
             double regional_avg_wealth = (region.population > 0) 
-                ? (region.production[agent.sector] / region.population) : 1.0;
+                ? (total_sector_production / region.population) : 1.0;
             double relative_position = agent.wealth / std::max(0.1, regional_avg_wealth);
             
             if (relative_position > 2.0) {
-                agent.income *= 1.0 + 0.1 * std::min(1.0, (relative_position - 2.0));
+                base_income *= 1.0 + 0.1 * std::min(1.0, (relative_position - 2.0));
             } else if (relative_position < 0.5) {
-                agent.income *= 0.9 + 0.2 * relative_position;
+                base_income *= 0.9 + 0.2 * relative_position;
             }
             
-            double consumption_capacity = agent.income / region.prices[FOOD];
+            agent.income = base_income;
+            
+            // Realistic consumption model (same as optimized path)
+            double subsistence_cost = region.prices[FOOD] * 0.7 + 
+                                     region.prices[ENERGY] * 0.35 + 
+                                     region.prices[SERVICES] * 0.15;
+            
+            double consumption, savings;
+            if (base_income >= subsistence_cost * 1.2) {
+                consumption = base_income * 0.8;
+                savings = base_income * 0.2;
+            } else if (base_income >= subsistence_cost) {
+                double surplus = base_income - subsistence_cost;
+                savings = surplus * 0.5;
+                consumption = base_income - savings;
+            } else {
+                consumption = base_income;
+                savings = 0.0;
+                double deficit = (subsistence_cost - base_income) * 0.5;
+                double wealth_draw = std::min(deficit, agent.wealth * 0.05);
+                agent.wealth -= wealth_draw;
+                consumption += wealth_draw;
+            }
+            agent.wealth = std::max(0.01, agent.wealth + savings);
+            
+            // Productivity with growth and decay
+            if (agent.productivity < 3.0) {
+                double growth_rate = 0.0003 * (1.0 + regional_avg_wealth * 0.1);
+                agent.productivity *= (1.0 + growth_rate);
+            }
+            agent.productivity *= 0.9999;
+            agent.productivity = std::max(0.2, agent.productivity);
+            
+            // Hardship based on essentials
+            double essential_cost = region.prices[FOOD] * 0.7 + region.prices[ENERGY] * 0.35;
+            double consumption_capacity = agent.income / essential_cost;
             agent.hardship = (consumption_capacity < 1.0) ? (1.0 - consumption_capacity) : 0.0;
-        }
+                int pressure_increment = 0;
+                if (total_pressure > 0.5) {
+                    pressure_increment = 2;
+                } else if (total_pressure > 0.2) {
+                    pressure_increment = 1;
+                }
         
         // Third pass: Update regional wealth distribution metrics
         for (std::size_t r = 0; r < regions_.size(); ++r) {
@@ -1034,38 +1103,45 @@ std::string Economy::determineEconomicSystem(const std::array<double, 4>& belief
     double tradition = beliefs[1];
     double hierarchy = beliefs[2];
     
-    // Low development → feudal or cooperative
-    if (development < 0.5) {
-        if (hierarchy > 0.3 && authority > 0.2) {
+    // Low development → feudal or cooperative (subsistence economies)
+    if (development < 0.6) {
+        if (hierarchy > 0.15 && authority > 0.1) {
             return "feudal";  // traditional hierarchy
-        } else {
+        } else if (hierarchy < -0.1) {
             return "cooperative";  // communal subsistence
         }
     }
     
-    // High hardship + inequality → revolution toward planned
-    if (hardship > 0.5 && inequality > 0.4) {
-        if (hierarchy < -0.2) {  // egalitarian beliefs
+    // Crisis conditions → revolutionary pressure
+    if (hardship > 0.4 && inequality > 0.5) {
+        if (hierarchy < -0.1) {  // egalitarian beliefs
             return "planned";  // equality-seeking planned economy
+        } else if (authority > 0.1) {
+            return "feudal";  // strongman restoration
         }
     }
     
-    // Developed + liberty + equality → cooperative
-    if (development > 1.5 && authority < -0.3 && hierarchy < -0.3) {
-        return "cooperative";  // democratic socialism
+    // Developed + liberty + equality → cooperative/social democracy
+    if (development > 1.2 && authority < -0.15 && hierarchy < -0.15) {
+        return "cooperative";
     }
     
-    // Developed + liberty + hierarchy → market
-    if (development > 1.0 && authority < -0.2 && hierarchy > 0.1) {
-        return "market";  // liberal capitalism
+    // Developed + liberty + accepts hierarchy → market capitalism
+    if (development > 0.8 && authority < -0.1 && hierarchy > 0.05) {
+        return "market";
     }
     
-    // Developed + authority + equality → planned
-    if (development > 1.0 && authority > 0.3 && hierarchy < 0.0) {
-        return "planned";  // state socialism
+    // Developed + authority + equality-leaning → planned economy
+    if (development > 0.8 && authority > 0.15 && hierarchy < 0.1) {
+        return "planned";
     }
     
-    // Default: mixed economy (most common)
+    // Traditional + hierarchical but developed → feudal remnants
+    if (tradition > 0.2 && hierarchy > 0.2 && development < 1.0) {
+        return "feudal";
+    }
+    
+    // Default: mixed economy (most common in moderate conditions)
     return "mixed";
 }
 

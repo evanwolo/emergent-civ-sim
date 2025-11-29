@@ -75,7 +75,10 @@ struct RegionalEconomy {
     // Hysteresis for system transitions (prevents thrashing)
     std::string pending_system = "";      // System we're transitioning toward (if any)
     int transition_pressure_ticks = 0;    // How many ticks sustained pressure for change
-    static constexpr int TRANSITION_THRESHOLD = 50;  // ~5 years of sustained pressure needed
+    // Number of ticks representing ~5 years of sustained pressure.
+    // Assumes TICKS_PER_YEAR is the simulation tick rate (default: 10).
+    static constexpr int TICKS_PER_YEAR = 10;
+    static constexpr int TRANSITION_THRESHOLD = 5 * TICKS_PER_YEAR;
     
     // Institutional path dependence (makes established systems harder to change)
     double institutional_inertia = 0.5;   // 0.0 = easy to change, 1.0 = locked in

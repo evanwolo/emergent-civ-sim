@@ -87,7 +87,7 @@ void Kernel::initAgents() {
     agents_.reserve(cfg_.population);
     regionIndex_.assign(cfg_.regions, {});
     
-    std::normal_distribution<double> xDist(0.0, 0.75);
+    std::normal_distribution<double> beliefNoise(0.0, 0.4);  // Reduced noise for geographic clustering
     std::normal_distribution<double> traitDist(0.5, 0.15);
     std::uniform_real_distribution<double> uniDist(0.0, 1.0);
     std::uniform_int_distribution<std::uint32_t> regionDist(0, cfg_.regions - 1);
@@ -124,13 +124,44 @@ void Kernel::initAgents() {
         a.assertiveness = std::clamp(traitDist(rng_), 0.0, 1.0);
         a.sociality = std::clamp(traitDist(rng_), 0.0, 1.0);
         
-        // NOTE: Removed hardcoded "every 100th agent is a leader" logic
-        // High-assertiveness individuals will naturally emerge from the trait distribution
-        // (traitDist has mean 0.5, std 0.15, so ~2.5% will have assertiveness > 0.8 naturally)
+        // GEOGRAPHIC BELIEF SEEDING: Create distinct regional cultures
+        // Instead of uniform N(0, σ), seed beliefs based on region location
+        // This creates 4 cultural zones that can diverge further or converge over time
+        const auto& region = economy_.getRegion(a.region);
+        double x = region.x;  // 0-1 coordinate
+        double y = region.y;  // 0-1 coordinate
         
-        // Initial beliefs
+        // Cultural zone influences based on Gaussian falloff from zone centers
+        // NW (0.25, 0.75): Authority+, Tradition+
+        // NE (0.75, 0.75): Liberty+, Tradition+  
+        // SW (0.25, 0.25): Authority+, Progress+
+        // SE (0.75, 0.25): Liberty+, Progress+
+        double nw_pull = std::exp(-((x-0.25)*(x-0.25) + (y-0.75)*(y-0.75)) / 0.15);
+        double ne_pull = std::exp(-((x-0.75)*(x-0.75) + (y-0.75)*(y-0.75)) / 0.15);
+        double sw_pull = std::exp(-((x-0.25)*(x-0.25) + (y-0.25)*(y-0.25)) / 0.15);
+        double se_pull = std::exp(-((x-0.75)*(x-0.75) + (y-0.25)*(y-0.25)) / 0.15);
+        
+        double total_pull = nw_pull + ne_pull + sw_pull + se_pull + 0.1;  // +0.1 prevents division by zero
+        nw_pull /= total_pull;
+        ne_pull /= total_pull;
+        sw_pull /= total_pull;
+        se_pull /= total_pull;
+        
+        // Regional belief biases (each zone has distinct cultural tendencies)
+        // [0] Authority-Liberty: NW/SW positive (authority), NE/SE negative (liberty)
+        // [1] Tradition-Progress: NW/NE positive (tradition), SW/SE negative (progress)
+        // [2] Hierarchy-Equality: varies by wealth/development tendency
+        // [3] Isolation-Unity: varies by coastal/central position
+        std::array<double, 4> regional_bias = {
+            (nw_pull + sw_pull) * 0.6 - (ne_pull + se_pull) * 0.6,  // Authority axis
+            (nw_pull + ne_pull) * 0.5 - (sw_pull + se_pull) * 0.5,  // Tradition axis
+            (nw_pull + se_pull) * 0.4 - (ne_pull + sw_pull) * 0.4,  // Hierarchy axis
+            (sw_pull + se_pull) * 0.3 - (nw_pull + ne_pull) * 0.3   // Unity axis
+        };
+        
+        // Initialize beliefs with geographic bias + individual noise
         for (int k = 0; k < 4; ++k) {
-            a.x[k] = xDist(rng_);
+            a.x[k] = regional_bias[k] + beliefNoise(rng_);
             a.B[k] = fastTanh(a.x[k]);
         }
         a.B_norm_sq = a.B[0]*a.B[0] + a.B[1]*a.B[1] + a.B[2]*a.B[2] + a.B[3]*a.B[3];
@@ -336,15 +367,8 @@ void Kernel::updateBeliefs() {
                 const Agent& neighbor = agents_[n_idx];
                 if (!neighbor.alive) continue;
                 
-                // Weight by similarity (homophily - echo chamber effect)
-                double weight = 1.0;
-                
-                // Language bonus: shared language strengthens influence
-                if (neighbor.primaryLang == agent.primaryLang) {
-                    weight *= 1.3;
-                }
-                
-                // Belief similarity bonus (creates echo chambers)
+                // EXPONENTIAL HOMOPHILY: Creates strong echo chamber effect
+                // Similar agents influence each other MUCH more than dissimilar ones
                 double dot = 0.0, norm_a = 0.0, norm_n = 0.0;
                 for (int b = 0; b < 4; ++b) {
                     dot += agent.B[b] * neighbor.B[b];
@@ -353,7 +377,16 @@ void Kernel::updateBeliefs() {
                 }
                 double similarity = (norm_a > 1e-9 && norm_n > 1e-9) ?
                     dot / (std::sqrt(norm_a) * std::sqrt(norm_n)) : 0.0;
-                weight *= (0.5 + similarity * 0.5);  // 0.5-1.0 based on similarity
+                
+                // EXPONENTIAL weighting: e^(similarity * 2.5) gives range 0.08-12.2
+                // This creates STRONG echo chambers - similar agents dominate influence
+                double weight = std::exp(similarity * 2.5);
+                weight = std::clamp(weight, 0.1, 10.0);  // Prevent numerical issues
+                
+                // Language bonus: shared language strengthens influence
+                if (neighbor.primaryLang == agent.primaryLang) {
+                    weight *= 1.5;
+                }
                 
                 // Accumulate weighted beliefs
                 for (int b = 0; b < 4; ++b) {
@@ -364,7 +397,7 @@ void Kernel::updateBeliefs() {
             }
         }
         
-        // Apply blended influence
+        // Apply blended influence with belief innovation
         const double stepSize = cfg_.stepSize;
         
         #pragma omp parallel for schedule(dynamic)
@@ -372,31 +405,46 @@ void Kernel::updateBeliefs() {
             auto& agent = agents_[i];
             if (!agent.alive) continue;
             
-            // Calculate neighbor weight based on conformity and network size
-            // Low conformity = more independent, rely more on neighbors (counter-intuitive but realistic)
-            // High conformity = follow the crowd (regional field)
-            double neighbor_weight = 0.6 - agent.conformity * 0.2;  // 0.4-0.6
+            // Thread-local RNG for innovation noise
+            auto& rng = getThreadLocalRNG();
+            std::normal_distribution<double> noise_dist(0.0, 0.03);  // Increased innovation noise
             
-            // Isolated agents (few neighbors) rely more on regional field
+            // Calculate neighbor weight based on conformity and network size
+            // HIGH neighbor weight = rely on close network (echo chambers)
+            // LOW neighbor weight = follow regional mainstream
+            // Non-conformists form subcultures; conformists follow the crowd
+            double neighbor_weight = 0.85 - agent.conformity * 0.35;  // 0.5-0.85
+            
+            // Isolated agents (few neighbors) must rely more on regional field
             if (neighbor_influences[i].neighbor_count < 2) {
-                neighbor_weight = 0.2;  // Mostly regional field
+                neighbor_weight = 0.4;  // Still significant regional influence
             }
-            neighbor_weight = std::clamp(neighbor_weight, 0.2, 0.8);
+            neighbor_weight = std::clamp(neighbor_weight, 0.4, 0.9);
             
             // Get blended social influence
             auto social_influence = mean_field_.getBlendedInfluence(
                 neighbor_influences[i], agent.region, neighbor_weight
             );
             
-            // Update beliefs toward social influence
-            double adapt_rate = stepSize * agent.m_comm * agent.m_susceptibility;
+            // BELIEF ANCHORING: Agents resist changing core beliefs
+            // Based on age (older = more set in ways) and assertiveness (confident = resistant)
+            double age_factor = std::min(1.0, agent.age / 50.0);  // Maxes out at 50
+            double anchoring = 0.3 + age_factor * 0.4 + agent.assertiveness * 0.2;  // 0.3-0.9
             
-            // Additional modulation by openness (open agents change faster)
+            // Update beliefs toward social influence (with resistance)
+            double adapt_rate = stepSize * agent.m_comm * agent.m_susceptibility;
             adapt_rate *= (0.7 + agent.openness * 0.6);
+            adapt_rate *= (1.0 - anchoring * 0.5);  // Anchoring reduces adaptation
             
             for (int b = 0; b < 4; ++b) {
+                // Social influence pull (reduced)
                 double delta = adapt_rate * fastTanh(social_influence[b] - agent.B[b]);
-                agent.x[b] += delta;
+                
+                // BELIEF INNOVATION: Random drift creates variation
+                // Young and open agents innovate more
+                double innovation = noise_dist(rng) * (1.5 - age_factor) * (0.5 + agent.openness);
+                
+                agent.x[b] += delta + innovation;
                 agent.B[b] = fastTanh(agent.x[b]);
             }
             
@@ -1013,7 +1061,7 @@ void Kernel::compactDeadAgents() {
         region.erase(
             std::remove_if(region.begin(), region.end(), 
                 [this](std::uint32_t id) { 
-                    return id >= agents_.size() || !agents_[id].alive; 
+                    return id >= agents_.size() || !agents_[id].alive;
                 }),
             region.end()
         );
@@ -1439,11 +1487,11 @@ void Kernel::updateRegionalAggregates() {
 // ============================================================================
 
 void Kernel::reconnectIsolatedAgents() {
-    // Run every 20 ticks (called from step() which already gates at 10 ticks)
-    if (generation_ % 20 != 0) return;
+    // Run every 5 ticks for faster network recovery (called from step())
+    if (generation_ % 5 != 0) return;
     
     std::size_t reconnected = 0;
-    const std::size_t max_reconnections = agents_.size() / 100; // 1% cap per tick
+    const std::size_t max_reconnections = agents_.size() / 50; // 2% cap per tick (increased)
     
     for (std::size_t i = 0; i < agents_.size() && reconnected < max_reconnections; ++i) {
         Agent& agent = agents_[i];

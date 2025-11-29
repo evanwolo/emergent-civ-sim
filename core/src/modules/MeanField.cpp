@@ -78,18 +78,23 @@ std::array<double, 4> MeanFieldApproximation::getBlendedInfluence(
     double field_strength = getFieldStrength(region);
     double regional_weight = 1.0 - neighbor_weight;
     
+    // DAMPEN REGIONAL FIELD: Prevent over-homogenization
+    // Regional field represents "ambient culture" but shouldn't dominate
+    // Scale down field strength to allow local variation to persist
+    double dampened_field_strength = field_strength * 0.6;  // 60% of original
+    
     if (neighbors.neighbor_count > 0 && neighbors.total_weight > 0.0) {
-        // Blend neighbor average with regional field
+        // Blend neighbor average with dampened regional field
         for (int i = 0; i < 4; ++i) {
             double neighbor_avg = neighbors.belief_sum[i] / neighbors.total_weight;
             result[i] = neighbor_weight * neighbor_avg + 
-                       regional_weight * field[i] * field_strength;
+                       regional_weight * field[i] * dampened_field_strength;
         }
     } else {
-        // Isolated agents: weaker regional field influence only
-        // This prevents over-homogenization of isolated migrants
+        // Isolated agents: very weak regional field influence
+        // Isolated people don't absorb regional culture as quickly
         for (int i = 0; i < 4; ++i) {
-            result[i] = field[i] * field_strength * 0.5;
+            result[i] = field[i] * dampened_field_strength * 0.3;
         }
     }
     
