@@ -182,6 +182,13 @@ private:
     
     // Language assignment based on region geography
     void assignLanguagesByGeography();
+    
+    // Incremental regional aggregates (avoids O(N) recomputation)
+    void updateRegionalAggregates();
+    void onAgentBorn(std::uint32_t agent_id);
+    void onAgentDied(std::uint32_t agent_id);
+    void onAgentMigrated(std::uint32_t agent_id, std::uint32_t from_region, std::uint32_t to_region);
+    void rebuildRegionalAggregates();  // Full rebuild (used at init and periodically for correction)
 
     KernelConfig cfg_;
     std::vector<Agent> agents_;
@@ -193,6 +200,20 @@ private:
     HealthModule health_;
     MeanFieldApproximation mean_field_;  // Mean field approximation
     EventLog event_log_;  // Event tracking system
+    
+    // Incrementally maintained regional aggregates
+    struct RegionalAggregates {
+        std::uint32_t population = 0;
+        std::array<double, 4> belief_sum = {0.0, 0.0, 0.0, 0.0};
+        bool dirty = false;  // Set if incremental updates may have drifted
+    };
+    std::vector<RegionalAggregates> regional_aggregates_;
+    bool aggregates_initialized_ = false;
+    
+    // Pre-computed migration attractiveness (updated periodically, not per-migrant)
+    std::vector<double> region_attractiveness_;
+    std::vector<std::uint32_t> sorted_attractive_regions_;  // Indices sorted by attractiveness (desc)
+    std::uint64_t attractiveness_update_gen_ = 0;
 
     // Helper functions
     inline double fastTanh(double x) const {

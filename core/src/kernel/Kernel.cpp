@@ -1,10 +1,20 @@
 #include "kernel/Kernel.h"
 #include "modules/Culture.h"
+#include "utils/Validation.h"
 #include <cmath>
 #include <algorithm>
 #include <numeric>
 #include <unordered_set>
 #include <omp.h>
+
+// Thread-local RNG for parallel operations (prevents race conditions)
+namespace {
+    thread_local std::mt19937_64 tl_rng{std::random_device{}()};
+    
+    std::mt19937_64& getThreadLocalRNG() {
+        return tl_rng;
+    }
+}
 
 Kernel::Kernel(const KernelConfig& cfg) : cfg_(cfg), rng_(cfg.seed) {
     // Validate demographic parameters
@@ -48,6 +58,13 @@ void Kernel::reset(const KernelConfig& cfg) {
     
     psychology_.initializeAgents(agents_);
     health_.initializeAgents(agents_);
+    
+    // Initialize incremental regional aggregates
+    regional_aggregates_.resize(cfg_.regions);
+    region_attractiveness_.resize(cfg_.regions);
+    sorted_attractive_regions_.resize(cfg_.regions);
+    rebuildRegionalAggregates();
+    aggregates_initialized_ = true;
 }
 
 void Kernel::initAgents() {
@@ -325,6 +342,10 @@ void Kernel::updateBeliefs() {
                              agent.B[1] * agent.B[1] +
                              agent.B[2] * agent.B[2] +
                              agent.B[3] * agent.B[3];
+            
+            // Validate beliefs (debug builds only)
+            validation::checkBeliefs(agent.B.data(), 4, "updateBeliefs (mean-field)");
+            validation::checkNonNegative(agent.B_norm_sq, "B_norm_sq");
         }
     } else {
         // **ORIGINAL PAIRWISE UPDATES**: O(N·k) complexity
@@ -385,6 +406,10 @@ void Kernel::updateBeliefs() {
                                    agents_[i].B[1] * agents_[i].B[1] +
                                    agents_[i].B[2] * agents_[i].B[2] +
                                    agents_[i].B[3] * agents_[i].B[3];
+            
+            // Validate beliefs (debug builds only)
+            validation::checkBeliefs(agents_[i].B.data(), 4, "updateBeliefs (pairwise)");
+            validation::checkNonNegative(agents_[i].B_norm_sq, "B_norm_sq");
         }
     }
 }
@@ -405,41 +430,38 @@ void Kernel::step() {
     
     // Update economy every 10 ticks (reduce overhead)
     if (generation_ % 10 == 0) {
-        // Build population counts and belief centroids per region
-        std::vector<std::uint32_t> region_populations(cfg_.regions, 0);
+        // Use incrementally maintained aggregates instead of full O(N) scan
+        // Periodically rebuild to correct any drift (every 100 ticks)
+        if (generation_ % 100 == 0) {
+            rebuildRegionalAggregates();
+        }
+        
+        // Build population counts and belief centroids from cached aggregates
+        std::vector<std::uint32_t> region_populations(cfg_.regions);
         std::vector<std::array<double, 4>> region_belief_centroids(cfg_.regions);
         
-        // Initialize centroids to zero
-        for (auto& centroid : region_belief_centroids) {
-            centroid = {0.0, 0.0, 0.0, 0.0};
-        }
-        
-        // Accumulate beliefs per region
-        for (const auto& agent : agents_) {
-            if (!agent.alive) continue;  // Skip dead agents
-            region_populations[agent.region]++;
-            region_belief_centroids[agent.region][0] += agent.B[0];
-            region_belief_centroids[agent.region][1] += agent.B[1];
-            region_belief_centroids[agent.region][2] += agent.B[2];
-            region_belief_centroids[agent.region][3] += agent.B[3];
-        }
-        
-        // Compute averages
         for (std::uint32_t r = 0; r < cfg_.regions; ++r) {
-            if (region_populations[r] > 0) {
-                const double inv_pop = 1.0 / region_populations[r];
-                region_belief_centroids[r][0] *= inv_pop;
-                region_belief_centroids[r][1] *= inv_pop;
-                region_belief_centroids[r][2] *= inv_pop;
-                region_belief_centroids[r][3] *= inv_pop;
+            region_populations[r] = regional_aggregates_[r].population;
+            if (regional_aggregates_[r].population > 0) {
+                const double inv_pop = 1.0 / regional_aggregates_[r].population;
+                region_belief_centroids[r][0] = regional_aggregates_[r].belief_sum[0] * inv_pop;
+                region_belief_centroids[r][1] = regional_aggregates_[r].belief_sum[1] * inv_pop;
+                region_belief_centroids[r][2] = regional_aggregates_[r].belief_sum[2] * inv_pop;
+                region_belief_centroids[r][3] = regional_aggregates_[r].belief_sum[3] * inv_pop;
+            } else {
+                region_belief_centroids[r] = {0.0, 0.0, 0.0, 0.0};
             }
         }
         
-        economy_.update(region_populations, region_belief_centroids, agents_, generation_);
+        economy_.update(region_populations, region_belief_centroids, agents_, generation_, &regionIndex_);
         
         // Apply economic feedback to agent beliefs and susceptibility
         for (auto& agent : agents_) {
             if (!agent.alive) continue;  // Skip dead agents
+            
+            // Validate region index
+            validation::checkIndex(agent.region, cfg_.regions, "agent.region in step()");
+            
             const auto& regional_econ = economy_.getRegion(agent.region);
             const auto& agent_econ = economy_.getAgentEconomy(agent.id);
             
@@ -650,32 +672,42 @@ double Kernel::fertilityPerTick(int age, std::uint32_t region_id, const Agent& a
     // Cultural modulation based on regional beliefs
     // Tradition-Progress axis (B[1]): Tradition (+1) → higher fertility, Progress (-1) → lower fertility
     double tradition = region_beliefs[1];
-    double tradition_factor = 1.0 + tradition * 0.3;  // ±30% based on cultural values
+    // Clamp tradition effect to prevent extreme multipliers
+    double tradition_factor = 1.0 + std::clamp(tradition, -1.0, 1.0) * 0.2;  // ±20% (reduced from ±30%)
     
     // Regional development → demographic transition (lower fertility with higher development)
     const auto& regional_econ = economy_.getRegion(region_id);
-    double development_factor = 1.0 / (1.0 + regional_econ.development * 0.15);  // Higher development → lower fertility
+    // Use smoother transition curve
+    double development_factor = 1.0 / (1.0 + regional_econ.development * 0.2);  // Higher development → lower fertility
     
     // Socioeconomic status: wealthier agents have fewer children (quality-quantity tradeoff)
     const auto& agent_econ = economy_.getAgentEconomy(agent.id);
     double wealth_factor = 1.0;
     if (regional_econ.development > 0.5) {  // Demographic transition only in developed regions
         // Normalize wealth relative to regional average
-        double avg_wealth = 1.0;  // Agents start at ~1.0 wealth
-        double relative_wealth = std::clamp(agent_econ.wealth / avg_wealth, 0.5, 3.0);
-        wealth_factor = 1.5 / relative_wealth;  // Richer → fewer children (inverse relationship)
+        double avg_wealth = std::max(0.5, regional_econ.welfare);  // Use regional welfare as baseline
+        double relative_wealth = std::clamp(agent_econ.wealth / avg_wealth, 0.3, 3.0);
+        // Smoother wealth effect: sqrt reduces extreme values
+        wealth_factor = std::sqrt(1.5 / relative_wealth);  // Richer → fewer children (but dampened)
     }
     
     // Delayed childbearing in high-development regions (shift peak age)
     double age_shift_factor = 1.0;
     if (regional_econ.development > 1.0 && age < 25) {
         // Reduce teen/early-20s fertility in developed regions
-        age_shift_factor = 0.5 + 0.5 * (age / 25.0);
+        age_shift_factor = 0.6 + 0.4 * (age / 25.0);  // Less aggressive reduction
     }
     
     double adjusted_annual = base_annual * tradition_factor * development_factor * 
                             wealth_factor * age_shift_factor;
-    adjusted_annual = std::clamp(adjusted_annual, 0.0, 0.25);  // Cap at 25% annual
+    
+    // BIOLOGICALLY REALISTIC CAP:
+    // Human gestation is ~9 months, so maximum births/year is ~1.1 (twins rare)
+    // But we're modeling probability of conception, not births
+    // Realistic max conception probability for fertile women is ~25% per month during fertile window
+    // Annualized, that's ~0.15-0.20 for peak fertility ages, accounting for infertility, miscarriage, etc.
+    // Cap at 15% annual (0.15) - this is the upper bound of realistic human fertility
+    adjusted_annual = std::clamp(adjusted_annual, 0.0, 0.15);
     
     return 1.0 - std::pow(1.0 - adjusted_annual, 1.0 / cfg_.ticksPerYear);
 }
@@ -684,35 +716,25 @@ void Kernel::stepDemography() {
     // Age increment every ticksPerYear ticks
     bool ageIncrement = (generation_ % cfg_.ticksPerYear == 0);
     
-    // Compute regional belief centroids for cultural modulation
+    // Use cached regional aggregates for belief centroids
     std::vector<std::array<double, 4>> region_belief_centroids(cfg_.regions);
-    std::vector<std::uint32_t> region_populations(cfg_.regions, 0);
+    std::vector<std::uint32_t> region_populations(cfg_.regions);
     
-    for (auto& centroid : region_belief_centroids) {
-        centroid.fill(0.0);
-    }
-    
-    for (const auto& agent : agents_) {
-        if (agent.alive) {
-            region_populations[agent.region]++;
-            region_belief_centroids[agent.region][0] += agent.B[0];
-            region_belief_centroids[agent.region][1] += agent.B[1];
-            region_belief_centroids[agent.region][2] += agent.B[2];
-            region_belief_centroids[agent.region][3] += agent.B[3];
-        }
-    }
-    
-    for (std::size_t r = 0; r < cfg_.regions; ++r) {
-        if (region_populations[r] > 0) {
-            double inv_pop = 1.0 / region_populations[r];
-            region_belief_centroids[r][0] *= inv_pop;
-            region_belief_centroids[r][1] *= inv_pop;
-            region_belief_centroids[r][2] *= inv_pop;
-            region_belief_centroids[r][3] *= inv_pop;
+    for (std::uint32_t r = 0; r < cfg_.regions; ++r) {
+        region_populations[r] = regional_aggregates_[r].population;
+        if (regional_aggregates_[r].population > 0) {
+            const double inv_pop = 1.0 / regional_aggregates_[r].population;
+            region_belief_centroids[r][0] = regional_aggregates_[r].belief_sum[0] * inv_pop;
+            region_belief_centroids[r][1] = regional_aggregates_[r].belief_sum[1] * inv_pop;
+            region_belief_centroids[r][2] = regional_aggregates_[r].belief_sum[2] * inv_pop;
+            region_belief_centroids[r][3] = regional_aggregates_[r].belief_sum[3] * inv_pop;
+        } else {
+            region_belief_centroids[r] = {0.0, 0.0, 0.0, 0.0};
         }
     }
     
     std::vector<std::uint32_t> newBirths;
+    std::vector<std::uint32_t> deaths;  // Track deaths for incremental aggregate updates
     std::uniform_real_distribution<double> uniform_01(0.0, 1.0);
     int death_count = 0;
     int birth_count = 0;
@@ -726,6 +748,7 @@ void Kernel::stepDemography() {
             agent.age++;
             // Hard cap on age
             if (agent.age > cfg_.maxAgeYears) {
+                deaths.push_back(agent.id);
                 agent.alive = false;
                 event_log_.logDeath(generation_, agent.id, agent.region, agent.age);
                 death_count++;
@@ -736,6 +759,7 @@ void Kernel::stepDemography() {
         // Mortality (region-specific) - use uniform distribution for reliability
         double pDeath = mortalityPerTick(agent.age, agent.region);
         if (uniform_01(rng_) < pDeath) {
+            deaths.push_back(agent.id);
             agent.alive = false;
             event_log_.logDeath(generation_, agent.id, agent.region, agent.age);
             death_count++;
@@ -770,7 +794,12 @@ void Kernel::stepDemography() {
         }
     }
     
-    // Create children
+    // Update regional aggregates for deaths
+    for (auto agent_id : deaths) {
+        onAgentDied(agent_id);
+    }
+    
+    // Create children (onAgentBorn called inside createChild)
     for (auto motherId : newBirths) {
         createChild(motherId);
     }
@@ -782,8 +811,9 @@ void Kernel::stepDemography() {
         //         generation_, birth_count, death_count, agents_.size());
     }
     
-    // Periodically compact dead agents (every 100 ticks to avoid overhead)
-    if (generation_ % 100 == 0) {
+    // More aggressive dead agent compaction (every 25 ticks instead of 100)
+    // Reduces cache pollution from dead agents
+    if (generation_ % 25 == 0) {
         compactDeadAgents();
     }
 }
@@ -898,6 +928,9 @@ void Kernel::createChild(std::uint32_t motherId) {
     agents_.push_back(child);
     regionIndex_[child.region].push_back(child.id);
     
+    // Update regional aggregates incrementally
+    onAgentBorn(child.id);
+    
     // Register with economy module
     economy_.addAgent(child.id, child.region, rng_);
     
@@ -934,31 +967,35 @@ void Kernel::stepMigration() {
     // Migration decisions: young adults with high hardship + high mobility move to better regions
     // This creates rural→urban, periphery→core flows
     
-    // Compute regional attractiveness scores
-    std::vector<double> region_attractiveness(cfg_.regions, 0.0);
-    std::vector<std::uint32_t> region_populations(cfg_.regions, 0);
-    
-    for (const auto& agent : agents_) {
-        if (agent.alive) {
-            region_populations[agent.region]++;
+    // Update attractiveness periodically (not every migration tick)
+    // This avoids recomputing attractiveness for each migrant
+    if (generation_ > attractiveness_update_gen_ + 50 || attractiveness_update_gen_ == 0) {
+        attractiveness_update_gen_ = generation_;
+        
+        for (std::size_t r = 0; r < cfg_.regions; ++r) {
+            const auto& regional_econ = economy_.getRegion(r);
+            std::uint32_t pop = regional_aggregates_[r].population;
+            
+            // Attractiveness = welfare - hardship + development - crowding
+            double welfare_pull = regional_econ.welfare;
+            double hardship_push = -regional_econ.hardship * 2.0;  // Hardship is strong push
+            double development_pull = regional_econ.development * 0.2;
+            
+            // Crowding penalty (reduces attractiveness when over capacity)
+            double crowding = 0.0;
+            if (pop > cfg_.regionCapacity) {
+                crowding = -(pop / cfg_.regionCapacity - 1.0) * 0.5;
+            }
+            
+            region_attractiveness_[r] = welfare_pull + hardship_push + development_pull + crowding;
+            sorted_attractive_regions_[r] = static_cast<std::uint32_t>(r);
         }
-    }
-    
-    for (std::size_t r = 0; r < cfg_.regions; ++r) {
-        const auto& regional_econ = economy_.getRegion(r);
         
-        // Attractiveness = welfare - hardship + development - crowding
-        double welfare_pull = regional_econ.welfare;
-        double hardship_push = -regional_econ.hardship * 2.0;  // Hardship is strong push
-        double development_pull = regional_econ.development * 0.2;
-        
-        // Crowding penalty (reduces attractiveness when over capacity)
-        double crowding = 0.0;
-        if (region_populations[r] > cfg_.regionCapacity) {
-            crowding = -(region_populations[r] / cfg_.regionCapacity - 1.0) * 0.5;
-        }
-        
-        region_attractiveness[r] = welfare_pull + hardship_push + development_pull + crowding;
+        // Sort regions by attractiveness (descending) for fast destination selection
+        std::sort(sorted_attractive_regions_.begin(), sorted_attractive_regions_.end(),
+            [this](std::uint32_t a, std::uint32_t b) {
+                return region_attractiveness_[a] > region_attractiveness_[b];
+            });
     }
     
     // EMERGENT MIGRATION CANDIDATES: Anyone can migrate, but propensity varies by circumstance
@@ -987,7 +1024,10 @@ void Kernel::stepMigration() {
     
     // Process migration decisions (stochastic, only a fraction migrate each tick)
     std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
-    std::uniform_int_distribution<std::uint32_t> region_dist(0, cfg_.regions - 1);
+    
+    // For destination selection, use pre-sorted top regions instead of random sampling
+    const std::size_t top_n = std::min(static_cast<std::size_t>(10), static_cast<std::size_t>(cfg_.regions));
+    std::uniform_int_distribution<std::size_t> top_dist(0, top_n - 1);
     
     for (auto agent_id : migration_candidates) {
         auto& agent = agents_[agent_id];
@@ -1001,16 +1041,17 @@ void Kernel::stepMigration() {
         double migration_prob = push_factor * 0.01;
         
         if (prob_dist(rng_) < migration_prob) {
-            // Find attractive destination (biased random choice)
+            // Find attractive destination from pre-sorted top regions
             std::uint32_t destination = origin;
             double best_gain = 0.0;
             
-            // Sample a few random regions and pick the most attractive
-            for (int attempt = 0; attempt < 5; ++attempt) {
-                std::uint32_t candidate = region_dist(rng_);
+            // Sample from top N attractive regions (already sorted)
+            for (std::size_t attempt = 0; attempt < 3; ++attempt) {
+                std::size_t idx = top_dist(rng_);
+                std::uint32_t candidate = sorted_attractive_regions_[idx];
                 if (candidate == origin) continue;
                 
-                double gain = region_attractiveness[candidate] - region_attractiveness[origin];
+                double gain = region_attractiveness_[candidate] - region_attractiveness_[origin];
                 if (gain > best_gain) {
                     best_gain = gain;
                     destination = candidate;
@@ -1034,6 +1075,12 @@ void Kernel::stepMigration() {
                 // Add to new region
                 agent.region = destination;
                 regionIndex_[destination].push_back(agent_id);
+                
+                // Update regional aggregates incrementally
+                onAgentMigrated(agent_id, origin, destination);
+                
+                // Log migration event
+                event_log_.logMigration(generation_, agent_id, origin, destination);
                 
                 // EMERGENT NETWORK RETENTION: Social skill and tie strength determine what survives
                 if (agent.neighbors.size() > 2) {
@@ -1187,5 +1234,94 @@ Kernel::Statistics Kernel::getStatistics() const {
     }
     
     return stats;
+}
+
+// ============================================================================
+// INCREMENTAL REGIONAL AGGREGATES
+// ============================================================================
+
+void Kernel::rebuildRegionalAggregates() {
+    // Full O(N) rebuild - used at init and periodically to correct drift
+    for (auto& agg : regional_aggregates_) {
+        agg.population = 0;
+        agg.belief_sum = {0.0, 0.0, 0.0, 0.0};
+        agg.dirty = false;
+    }
+    
+    for (const auto& agent : agents_) {
+        if (!agent.alive) continue;
+        
+        // Validate region
+        if (agent.region >= cfg_.regions) {
+            continue;  // Skip invalid (will be caught by validation)
+        }
+        
+        auto& agg = regional_aggregates_[agent.region];
+        agg.population++;
+        agg.belief_sum[0] += agent.B[0];
+        agg.belief_sum[1] += agent.B[1];
+        agg.belief_sum[2] += agent.B[2];
+        agg.belief_sum[3] += agent.B[3];
+    }
+}
+
+void Kernel::onAgentBorn(std::uint32_t agent_id) {
+    if (agent_id >= agents_.size()) return;
+    const auto& agent = agents_[agent_id];
+    if (!agent.alive || agent.region >= cfg_.regions) return;
+    
+    auto& agg = regional_aggregates_[agent.region];
+    agg.population++;
+    agg.belief_sum[0] += agent.B[0];
+    agg.belief_sum[1] += agent.B[1];
+    agg.belief_sum[2] += agent.B[2];
+    agg.belief_sum[3] += agent.B[3];
+}
+
+void Kernel::onAgentDied(std::uint32_t agent_id) {
+    if (agent_id >= agents_.size()) return;
+    const auto& agent = agents_[agent_id];
+    // Note: agent.alive may already be false when this is called
+    if (agent.region >= cfg_.regions) return;
+    
+    auto& agg = regional_aggregates_[agent.region];
+    if (agg.population > 0) {
+        agg.population--;
+        agg.belief_sum[0] -= agent.B[0];
+        agg.belief_sum[1] -= agent.B[1];
+        agg.belief_sum[2] -= agent.B[2];
+        agg.belief_sum[3] -= agent.B[3];
+    }
+}
+
+void Kernel::onAgentMigrated(std::uint32_t agent_id, std::uint32_t from_region, std::uint32_t to_region) {
+    if (agent_id >= agents_.size()) return;
+    const auto& agent = agents_[agent_id];
+    if (!agent.alive) return;
+    if (from_region >= cfg_.regions || to_region >= cfg_.regions) return;
+    
+    // Remove from old region
+    auto& from_agg = regional_aggregates_[from_region];
+    if (from_agg.population > 0) {
+        from_agg.population--;
+        from_agg.belief_sum[0] -= agent.B[0];
+        from_agg.belief_sum[1] -= agent.B[1];
+        from_agg.belief_sum[2] -= agent.B[2];
+        from_agg.belief_sum[3] -= agent.B[3];
+    }
+    
+    // Add to new region
+    auto& to_agg = regional_aggregates_[to_region];
+    to_agg.population++;
+    to_agg.belief_sum[0] += agent.B[0];
+    to_agg.belief_sum[1] += agent.B[1];
+    to_agg.belief_sum[2] += agent.B[2];
+    to_agg.belief_sum[3] += agent.B[3];
+}
+
+void Kernel::updateRegionalAggregates() {
+    // Update belief sums based on current agent beliefs
+    // This is called when beliefs change but population doesn't
+    // For now, we use periodic full rebuild instead (cheaper than tracking all belief changes)
 }
 

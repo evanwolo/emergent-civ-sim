@@ -72,6 +72,11 @@ struct RegionalEconomy {
     std::string economic_system = "mixed";  // "market", "planned", "mixed", "feudal", "cooperative"
     double system_stability = 1.0;  // how well system fits population beliefs
     
+    // Hysteresis for system transitions (prevents thrashing)
+    std::string pending_system = "";      // System we're transitioning toward (if any)
+    int transition_pressure_ticks = 0;    // How many ticks sustained pressure for change
+    static constexpr int TRANSITION_THRESHOLD = 50;  // ~5 years of sustained pressure needed
+    
     // Tech multipliers (from Tech module, Phase 2.7)
     std::array<double, kGoodTypes> tech_multipliers = {1.0, 1.0, 1.0, 1.0, 1.0};
     
@@ -95,7 +100,8 @@ public:
     void update(const std::vector<std::uint32_t>& region_populations,
                 const std::vector<std::array<double, 4>>& region_belief_centroids,
                 const std::vector<Agent>& agents,
-                std::uint64_t generation);
+                std::uint64_t generation,
+                const std::vector<std::vector<std::uint32_t>>* region_index = nullptr);  // Optional region index for O(R*pop/R) instead of O(N)
     
     // Accessors
     const RegionalEconomy& getRegion(std::uint32_t region_id) const;
@@ -157,9 +163,11 @@ private:
     void computeTrade();
     void computeConsumption();
     void updatePrices();
-    void distributeIncome(const std::vector<Agent>& agents);
+    void distributeIncome(const std::vector<Agent>& agents, 
+                          const std::vector<std::vector<std::uint32_t>>* region_index = nullptr);
     void computeWelfare();
-    void computeInequality(const std::vector<Agent>& agents);
+    void computeInequality(const std::vector<Agent>& agents,
+                           const std::vector<std::vector<std::uint32_t>>* region_index = nullptr);
     void computeHardship();
     void evolveDevelopment();
     void evolveEconomicSystems(const std::vector<std::array<double, 4>>& region_belief_centroids);

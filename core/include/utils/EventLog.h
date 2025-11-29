@@ -16,7 +16,11 @@ enum class EventType {
     MOVEMENT_DISBANDED,
     IDEOLOGY_SHIFT,
     ECONOMIC_CRISIS,
-    SYSTEM_CHANGE
+    SYSTEM_CHANGE,
+    MIGRATION,              // Agent moved between regions
+    CULTURAL_CLUSTER_SPLIT, // Cultural divergence event
+    HARDSHIP_CRISIS,        // Region entered hardship crisis
+    DEVELOPMENT_MILESTONE   // Region hit development threshold
 };
 
 // Individual event record
@@ -55,6 +59,10 @@ public:
                           std::uint32_t region_id, std::size_t member_count);
     void logSystemChange(std::uint64_t tick, std::uint32_t region_id, 
                         const std::string& old_system, const std::string& new_system);
+    void logMigration(std::uint64_t tick, std::uint32_t agent_id, 
+                     std::uint32_t from_region, std::uint32_t to_region);
+    void logHardshipCrisis(std::uint64_t tick, std::uint32_t region_id, double hardship_level);
+    void logDevelopmentMilestone(std::uint64_t tick, std::uint32_t region_id, double development_level);
     
     // Export to CSV file
     void exportCSV(const std::string& filepath) const;

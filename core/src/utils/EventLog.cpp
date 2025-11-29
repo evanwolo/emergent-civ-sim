@@ -73,6 +73,25 @@ void EventLog::logSystemChange(std::uint64_t tick, std::uint32_t region_id,
     logEvent(tick, EventType::SYSTEM_CHANGE, 0, region_id, details.str(), 1.0);
 }
 
+void EventLog::logMigration(std::uint64_t tick, std::uint32_t agent_id,
+                           std::uint32_t from_region, std::uint32_t to_region) {
+    std::ostringstream details;
+    details << "from=" << from_region << ";to=" << to_region;
+    logEvent(tick, EventType::MIGRATION, agent_id, to_region, details.str(), 1.0);
+}
+
+void EventLog::logHardshipCrisis(std::uint64_t tick, std::uint32_t region_id, double hardship_level) {
+    std::ostringstream details;
+    details << "hardship=" << std::fixed << std::setprecision(3) << hardship_level;
+    logEvent(tick, EventType::HARDSHIP_CRISIS, 0, region_id, details.str(), hardship_level);
+}
+
+void EventLog::logDevelopmentMilestone(std::uint64_t tick, std::uint32_t region_id, double development_level) {
+    std::ostringstream details;
+    details << "development=" << std::fixed << std::setprecision(2) << development_level;
+    logEvent(tick, EventType::DEVELOPMENT_MILESTONE, 0, region_id, details.str(), development_level);
+}
+
 void EventLog::exportCSV(const std::string& filepath) const {
     std::lock_guard<std::mutex> lock(mutex_);
     
@@ -143,6 +162,10 @@ std::string EventLog::eventTypeToString(EventType type) const {
         case EventType::IDEOLOGY_SHIFT: return "IDEOLOGY_SHIFT";
         case EventType::ECONOMIC_CRISIS: return "ECONOMIC_CRISIS";
         case EventType::SYSTEM_CHANGE: return "SYSTEM_CHANGE";
+        case EventType::MIGRATION: return "MIGRATION";
+        case EventType::CULTURAL_CLUSTER_SPLIT: return "CULTURAL_CLUSTER_SPLIT";
+        case EventType::HARDSHIP_CRISIS: return "HARDSHIP_CRISIS";
+        case EventType::DEVELOPMENT_MILESTONE: return "DEVELOPMENT_MILESTONE";
         default: return "UNKNOWN";
     }
 }

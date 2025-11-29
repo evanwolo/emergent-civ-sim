@@ -15,6 +15,7 @@ set(CORE_SOURCES
   src/modules/TradeNetwork.cpp
   src/modules/CohortDemographics.cpp
   src/utils/EventLog.cpp
+  src/utils/Serialization.cpp
 )
 
 file(GLOB_RECURSE CORE_HEADERS

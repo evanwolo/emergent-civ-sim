@@ -126,7 +126,8 @@ void Economy::init(std::uint32_t num_regions,
 void Economy::update(const std::vector<std::uint32_t>& region_populations,
                     const std::vector<std::array<double, 4>>& region_belief_centroids,
                     const std::vector<Agent>& agents,
-                    std::uint64_t generation) {
+                    std::uint64_t generation,
+                    const std::vector<std::vector<std::uint32_t>>* region_index) {
     // Update population counts
     for (std::size_t i = 0; i < regions_.size(); ++i) {
         regions_[i].population = region_populations[i];
@@ -143,9 +144,9 @@ void Economy::update(const std::vector<std::uint32_t>& region_populations,
     computeTrade();
     computeConsumption();
     updatePrices();
-    distributeIncome(agents);
+    distributeIncome(agents, region_index);
     computeWelfare();
-    computeInequality(agents);
+    computeInequality(agents, region_index);
     computeHardship();
 }
 
@@ -191,7 +192,8 @@ void Economy::computeWelfare() {
     }
 }
 
-void Economy::computeInequality(const std::vector<Agent>& agents) {
+void Economy::computeInequality(const std::vector<Agent>& agents,
+                                const std::vector<std::vector<std::uint32_t>>* region_index) {
     // Compute Gini coefficient for each region based on agent wealth
     // This is now FULLY EMERGENT - no overrides based on economic system labels
     for (std::size_t i = 0; i < regions_.size(); ++i) {
@@ -201,7 +203,39 @@ void Economy::computeInequality(const std::vector<Agent>& agents) {
         }
         
         // Compute Gini from agent wealth distribution - this is the TRUE inequality
-        double gini = computeRegionGini(static_cast<std::uint32_t>(i), agents);
+        // Use region_index if available for faster lookup
+        double gini = 0.0;
+        if (region_index && i < region_index->size()) {
+            const auto& agent_ids = (*region_index)[i];
+            if (agent_ids.empty()) {
+                gini = 0.0;
+            } else {
+                // Fast Gini using pre-indexed agents
+                std::vector<double> wealths;
+                wealths.reserve(agent_ids.size());
+                for (auto aid : agent_ids) {
+                    if (aid < agents_.size()) {
+                        wealths.push_back(agents_[aid].wealth);
+                    }
+                }
+                
+                if (wealths.size() < 2) {
+                    gini = 0.0;
+                } else {
+                    std::sort(wealths.begin(), wealths.end());
+                    double sum_of_differences = 0.0;
+                    double total = 0.0;
+                    std::size_t n = wealths.size();
+                    for (std::size_t j = 0; j < n; ++j) {
+                        total += wealths[j];
+                        sum_of_differences += wealths[j] * (2.0 * j - n + 1.0);
+                    }
+                    gini = (total > 0.0) ? sum_of_differences / (n * total) : 0.0;
+                }
+            }
+        } else {
+            gini = computeRegionGini(static_cast<std::uint32_t>(i), agents);
+        }
         
         // No more overrides! The economic system's inequality emerges from
         // actual agent wealth distribution, not predetermined assumptions
@@ -515,125 +549,212 @@ void Economy::updatePrices() {
     }
 }
 
-void Economy::distributeIncome(const std::vector<Agent>& agents) {
+void Economy::distributeIncome(const std::vector<Agent>& agents,
+                               const std::vector<std::vector<std::uint32_t>>* region_index) {
     // Distribute income to agents based on productivity and regional economy
     // This creates wealth inequality over time
     
     if (agents_.empty()) return;
     
-    // First pass: compute total productivity per region
-    std::vector<double> region_total_productivity(regions_.size(), 0.0);
-    
-    // Use actual agent.region values instead of sequential assignment
-    for (std::size_t i = 0; i < agents_.size(); ++i) {
-        std::uint32_t region_id = agents[i].region;
-        
-        // Validate agent-region mapping
-        if (region_id >= regions_.size()) {
-            throw std::runtime_error("Invalid agent.region in distributeIncome: " + 
-                                   std::to_string(region_id) + 
-                                   " (must be < " + std::to_string(regions_.size()) + ")");
-        }
-        
-        region_total_productivity[region_id] += agents_[i].productivity;
-    }
-    
-    // Second pass: distribute regional income to agents
-    for (std::size_t i = 0; i < agents_.size(); ++i) {
-        std::uint32_t region_id = agents[i].region;
-        
-        // Validate agent-region mapping
-        if (region_id >= regions_.size()) {
-            throw std::runtime_error("Invalid agent.region in distributeIncome (second pass): " + 
-                                   std::to_string(region_id) + 
-                                   " (must be < " + std::to_string(regions_.size()) + ")");
-        }
-        
-        auto& region = regions_[region_id];
-        auto& agent = agents_[i];
-        
-        if (region_total_productivity[region_id] == 0.0) {
-            agent.income = 0.0;
-            agent.hardship = 1.0;
-            continue;
-        }
-        
-        // Agent income = (their productivity / total productivity) × regional production in their sector
-        double sector_production = region.production[agent.sector];
-        double income_share = agent.productivity / region_total_productivity[region_id];
-        agent.income = sector_production * income_share * region.prices[agent.sector];
-        
-        // Consumption (agents must spend to maintain wealth)
-        double consumption = std::min(agent.wealth, agent.income * 0.8);  // consume ~80% of income or available wealth
-        agent.wealth -= consumption;
-        
-        // Wealth accumulation from savings
-        agent.wealth += agent.income * 0.2;  // save 20% of income
-        
-        // Wealth can't go negative
-        agent.wealth = std::max(0.0, agent.wealth);
-        
-        // EMERGENT INCOME DYNAMICS: Based on wealth, productivity, and regional conditions
-        // No hardcoded system-based multipliers!
-        
-        // Wealth begets wealth (capital returns) - this is emergent from having capital
-        double wealth_return = std::log1p(agent.wealth) * 0.01;  // diminishing returns
-        agent.income += wealth_return;
-        
-        // Productivity compounds slowly based on experience (proxied by wealth accumulation)
-        if (agent.productivity < 3.0) {
-            agent.productivity *= (1.0 + 0.0005 * agent.productivity);  // slower compound growth
-        }
-        
-        // Regional economic conditions affect all incomes
-        double regional_multiplier = 0.8 + region.efficiency * 0.4;  // 0.8-1.2 based on efficiency
-        agent.income *= regional_multiplier;
-        
-        // Competition effect: in regions with high inequality, median incomes compress
-        // while top incomes grow (emergent Matthew effect)
-        double regional_avg_wealth = (region.population > 0) 
-            ? (sector_production / region.population) : 1.0;
-        double relative_position = agent.wealth / std::max(0.1, regional_avg_wealth);
-        
-        if (relative_position > 2.0) {
-            // Above-average wealth → slight income boost from network effects
-            agent.income *= 1.0 + 0.1 * std::min(1.0, (relative_position - 2.0));
-        } else if (relative_position < 0.5) {
-            // Below-average wealth → slight income penalty from lack of capital
-            agent.income *= 0.9 + 0.2 * relative_position;
-        }
-        
-        // Compute agent hardship
-        double consumption_capacity = agent.income / region.prices[FOOD];  // simplified
-        agent.hardship = (consumption_capacity < 1.0) ? (1.0 - consumption_capacity) : 0.0;
-    }
-    
-    // Update regional wealth distribution metrics
-    for (std::size_t r = 0; r < regions_.size(); ++r) {
-        if (regions_[r].population == 0) continue;
-        
-        // Collect agent wealths in this region using actual agent.region values
-        std::vector<double> wealths;
-        for (std::size_t i = 0; i < agents_.size(); ++i) {
-            if (agents[i].region == r) {
-                wealths.push_back(agents_[i].wealth);
+    // If we have region_index, use cache-friendly region-batched processing
+    // Otherwise fall back to O(N) passes
+    if (region_index && region_index->size() == regions_.size()) {
+        // OPTIMIZED PATH: Process by region (cache-friendly, fewer passes)
+        for (std::size_t r = 0; r < regions_.size(); ++r) {
+            auto& region = regions_[r];
+            const auto& agent_ids = (*region_index)[r];
+            
+            if (agent_ids.empty()) continue;
+            
+            // Compute total productivity for this region (one pass over region's agents)
+            double region_total_productivity = 0.0;
+            for (auto agent_id : agent_ids) {
+                if (agent_id < agents_.size()) {
+                    region_total_productivity += agents_[agent_id].productivity;
+                }
+            }
+            
+            if (region_total_productivity == 0.0) {
+                // All agents in region have zero productivity
+                for (auto agent_id : agent_ids) {
+                    if (agent_id < agents_.size()) {
+                        agents_[agent_id].income = 0.0;
+                        agents_[agent_id].hardship = 1.0;
+                    }
+                }
+                continue;
+            }
+            
+            // Distribute income to agents in this region (one pass)
+            double regional_avg_wealth = 0.0;
+            if (region.population > 0) {
+                double total_sector_production = 0.0;
+                for (int g = 0; g < kGoodTypes; ++g) {
+                    total_sector_production += region.production[g];
+                }
+                regional_avg_wealth = total_sector_production / region.population;
+            } else {
+                regional_avg_wealth = 1.0;
+            }
+            
+            for (auto agent_id : agent_ids) {
+                if (agent_id >= agents_.size()) continue;
+                auto& agent = agents_[agent_id];
+                
+                // Agent income = (their productivity / total productivity) × regional production in their sector
+                double sector_production = region.production[agent.sector];
+                double income_share = agent.productivity / region_total_productivity;
+                agent.income = sector_production * income_share * region.prices[agent.sector];
+                
+                // Consumption (agents must spend to maintain wealth)
+                double consumption = std::min(agent.wealth, agent.income * 0.8);
+                agent.wealth -= consumption;
+                
+                // Wealth accumulation from savings
+                agent.wealth += agent.income * 0.2;
+                agent.wealth = std::max(0.0, agent.wealth);
+                
+                // Wealth begets wealth (capital returns)
+                double wealth_return = std::log1p(agent.wealth) * 0.01;
+                agent.income += wealth_return;
+                
+                // Productivity compounds slowly
+                if (agent.productivity < 3.0) {
+                    agent.productivity *= (1.0 + 0.0005 * agent.productivity);
+                }
+                
+                // Regional efficiency effect
+                double regional_multiplier = 0.8 + region.efficiency * 0.4;
+                agent.income *= regional_multiplier;
+                
+                // Competition/position effect
+                double relative_position = agent.wealth / std::max(0.1, regional_avg_wealth);
+                if (relative_position > 2.0) {
+                    agent.income *= 1.0 + 0.1 * std::min(1.0, (relative_position - 2.0));
+                } else if (relative_position < 0.5) {
+                    agent.income *= 0.9 + 0.2 * relative_position;
+                }
+                
+                // Compute agent hardship
+                double consumption_capacity = agent.income / region.prices[FOOD];
+                agent.hardship = (consumption_capacity < 1.0) ? (1.0 - consumption_capacity) : 0.0;
+            }
+            
+            // Update regional wealth distribution metrics (one pass over region)
+            std::vector<double> wealths;
+            wealths.reserve(agent_ids.size());
+            for (auto agent_id : agent_ids) {
+                if (agent_id < agents_.size()) {
+                    wealths.push_back(agents_[agent_id].wealth);
+                }
+            }
+            
+            if (!wealths.empty()) {
+                std::sort(wealths.begin(), wealths.end());
+                
+                std::size_t top_10_start = wealths.size() * 9 / 10;
+                double top_10_wealth = std::accumulate(wealths.begin() + top_10_start, wealths.end(), 0.0);
+                double total_wealth = std::accumulate(wealths.begin(), wealths.end(), 0.0);
+                region.wealth_top_10 = (total_wealth > 0) ? (top_10_wealth / total_wealth) : 0.0;
+                
+                std::size_t bottom_50_end = wealths.size() / 2;
+                double bottom_50_wealth = std::accumulate(wealths.begin(), wealths.begin() + bottom_50_end, 0.0);
+                region.wealth_bottom_50 = (total_wealth > 0) ? (bottom_50_wealth / total_wealth) : 0.0;
             }
         }
+    } else {
+        // FALLBACK PATH: Original O(N) implementation
+        // First pass: compute total productivity per region
+        std::vector<double> region_total_productivity(regions_.size(), 0.0);
         
-        if (wealths.empty()) continue;
+        for (std::size_t i = 0; i < agents_.size(); ++i) {
+            std::uint32_t region_id = agents[i].region;
+            
+            if (region_id >= regions_.size()) {
+                throw std::runtime_error("Invalid agent.region in distributeIncome: " + 
+                                       std::to_string(region_id) + 
+                                       " (must be < " + std::to_string(regions_.size()) + ")");
+            }
+            
+            region_total_productivity[region_id] += agents_[i].productivity;
+        }
         
-        std::sort(wealths.begin(), wealths.end());
+        // Second pass: distribute regional income to agents
+        for (std::size_t i = 0; i < agents_.size(); ++i) {
+            std::uint32_t region_id = agents[i].region;
+            
+            if (region_id >= regions_.size()) {
+                throw std::runtime_error("Invalid agent.region in distributeIncome (second pass): " + 
+                                       std::to_string(region_id) + 
+                                       " (must be < " + std::to_string(regions_.size()) + ")");
+            }
+            
+            auto& region = regions_[region_id];
+            auto& agent = agents_[i];
+            
+            if (region_total_productivity[region_id] == 0.0) {
+                agent.income = 0.0;
+                agent.hardship = 1.0;
+                continue;
+            }
+            
+            double sector_production = region.production[agent.sector];
+            double income_share = agent.productivity / region_total_productivity[region_id];
+            agent.income = sector_production * income_share * region.prices[agent.sector];
+            
+            double consumption = std::min(agent.wealth, agent.income * 0.8);
+            agent.wealth -= consumption;
+            agent.wealth += agent.income * 0.2;
+            agent.wealth = std::max(0.0, agent.wealth);
+            
+            double wealth_return = std::log1p(agent.wealth) * 0.01;
+            agent.income += wealth_return;
+            
+            if (agent.productivity < 3.0) {
+                agent.productivity *= (1.0 + 0.0005 * agent.productivity);
+            }
+            
+            double regional_multiplier = 0.8 + region.efficiency * 0.4;
+            agent.income *= regional_multiplier;
+            
+            double regional_avg_wealth = (region.population > 0) 
+                ? (region.production[agent.sector] / region.population) : 1.0;
+            double relative_position = agent.wealth / std::max(0.1, regional_avg_wealth);
+            
+            if (relative_position > 2.0) {
+                agent.income *= 1.0 + 0.1 * std::min(1.0, (relative_position - 2.0));
+            } else if (relative_position < 0.5) {
+                agent.income *= 0.9 + 0.2 * relative_position;
+            }
+            
+            double consumption_capacity = agent.income / region.prices[FOOD];
+            agent.hardship = (consumption_capacity < 1.0) ? (1.0 - consumption_capacity) : 0.0;
+        }
         
-        // Top 10% wealth share
-        std::size_t top_10_start = wealths.size() * 9 / 10;
-        double top_10_wealth = std::accumulate(wealths.begin() + top_10_start, wealths.end(), 0.0);
-        double total_wealth = std::accumulate(wealths.begin(), wealths.end(), 0.0);
-        regions_[r].wealth_top_10 = (total_wealth > 0) ? (top_10_wealth / total_wealth) : 0.0;
-        
-        // Bottom 50% wealth share
-        std::size_t bottom_50_end = wealths.size() / 2;
-        double bottom_50_wealth = std::accumulate(wealths.begin(), wealths.begin() + bottom_50_end, 0.0);
-        regions_[r].wealth_bottom_50 = (total_wealth > 0) ? (bottom_50_wealth / total_wealth) : 0.0;
+        // Third pass: Update regional wealth distribution metrics
+        for (std::size_t r = 0; r < regions_.size(); ++r) {
+            if (regions_[r].population == 0) continue;
+            
+            std::vector<double> wealths;
+            for (std::size_t i = 0; i < agents_.size(); ++i) {
+                if (agents[i].region == r) {
+                    wealths.push_back(agents_[i].wealth);
+                }
+            }
+            
+            if (wealths.empty()) continue;
+            
+            std::sort(wealths.begin(), wealths.end());
+            
+            std::size_t top_10_start = wealths.size() * 9 / 10;
+            double top_10_wealth = std::accumulate(wealths.begin() + top_10_start, wealths.end(), 0.0);
+            double total_wealth = std::accumulate(wealths.begin(), wealths.end(), 0.0);
+            regions_[r].wealth_top_10 = (total_wealth > 0) ? (top_10_wealth / total_wealth) : 0.0;
+            
+            std::size_t bottom_50_end = wealths.size() / 2;
+            double bottom_50_wealth = std::accumulate(wealths.begin(), wealths.begin() + bottom_50_end, 0.0);
+            regions_[r].wealth_bottom_50 = (total_wealth > 0) ? (bottom_50_wealth / total_wealth) : 0.0;
+        }
     }
 }
 
@@ -672,30 +793,49 @@ void Economy::evolveEconomicSystems(const std::vector<std::array<double, 4>>& re
         std::string ideal_system = determineEconomicSystem(beliefs, region.development, 
                                                            region.hardship, region.inequality);
         
-        // EMERGENT SYSTEM TRANSITION: Gradual probability-based change
-        // Systems don't flip at magic thresholds - they shift under sustained pressure
+        // EMERGENT SYSTEM TRANSITION WITH HYSTERESIS
+        // Systems require sustained pressure over multiple ticks to change
+        // This prevents thrashing between systems in crisis regions
         if (region.economic_system != ideal_system) {
-            // Transition pressure builds from multiple sources
-            double hardship_pressure = std::max(0.0, (region.hardship - 0.3) * 0.5); // starts building at 0.3
-            double prosperity_pressure = std::max(0.0, (region.welfare - 0.8) * 0.3); // success enables experimentation
-            double instability_pressure = (1.0 - region.system_stability) * 0.2; // unstable systems more likely to change
-            double inequality_pressure = std::max(0.0, (region.inequality - 0.4) * 0.3); // high inequality → unrest
-            
-            double total_pressure = hardship_pressure + prosperity_pressure + instability_pressure + inequality_pressure;
-            
-            // Probabilistic transition: higher pressure = higher chance
-            // Even low pressure has tiny chance; high pressure makes change likely but not guaranteed
-            double transition_prob = std::min(0.5, total_pressure * 0.1); // max 50% per tick
-            std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
-            static std::mt19937 sys_rng(42); // local RNG for system transitions
-            
-            if (prob_dist(sys_rng) < transition_prob) {
-                region.economic_system = ideal_system;
-                region.system_stability = 0.2 + 0.2 * (1.0 - total_pressure); // harder transitions = less stable result
+            // Check if we're continuing pressure toward the same target
+            if (region.pending_system == ideal_system) {
+                // Same pressure direction - accumulate
+                double hardship_pressure = std::max(0.0, (region.hardship - 0.3) * 0.5);
+                double prosperity_pressure = std::max(0.0, (region.welfare - 0.8) * 0.3);
+                double instability_pressure = (1.0 - region.system_stability) * 0.2;
+                double inequality_pressure = std::max(0.0, (region.inequality - 0.4) * 0.3);
+                double total_pressure = hardship_pressure + prosperity_pressure + instability_pressure + inequality_pressure;
+                
+                // Pressure threshold determines how fast we accumulate transition ticks
+                // High pressure = faster accumulation, low pressure = slower
+                int pressure_increment = (total_pressure > 0.5) ? 2 : 
+                                        (total_pressure > 0.2) ? 1 : 0;
+                region.transition_pressure_ticks += pressure_increment;
+                
+                // Stability degrades during transition pressure
+                region.system_stability = std::max(0.2, region.system_stability - 0.01 * total_pressure);
+                
+                // Check if we've reached the threshold for transition
+                if (region.transition_pressure_ticks >= RegionalEconomy::TRANSITION_THRESHOLD) {
+                    // Transition happens!
+                    region.economic_system = ideal_system;
+                    region.pending_system = "";
+                    region.transition_pressure_ticks = 0;
+                    region.system_stability = 0.3;  // New systems start unstable
+                    
+                    // Log the system change (if event logging available)
+                    // event_log_.logSystemChange(generation, i, old_system, ideal_system);
+                }
+            } else {
+                // Different pressure direction - reset and start new accumulation
+                region.pending_system = ideal_system;
+                region.transition_pressure_ticks = 1;
             }
         } else {
-            // Stable system
-            region.system_stability = std::min(1.0, region.system_stability + 0.01);
+            // System matches ideal - no pressure, recover stability
+            region.pending_system = "";
+            region.transition_pressure_ticks = 0;
+            region.system_stability = std::min(1.0, region.system_stability + 0.02);
         }
         
         // EMERGENT EFFICIENCY: Based on actual production performance, not system labels
